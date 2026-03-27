@@ -81,8 +81,7 @@ gdown --folder https://drive.google.com/drive/folders/1-C93zsbEiat-fKGBOSCEpvC3O
 ```
 
 ### Download the data manually
-**Download link:**  
-[Download dataset](https://drive.google.com/drive/folders/1-C93zsbEiat-fKGBOSCEpvC3OcdtIM45?usp=sharing)
+**Download link:** [Google Drive](https://drive.google.com/drive/folders/1-C93zsbEiat-fKGBOSCEpvC3OcdtIM45?usp=sharing)
 
 ### Instructions
 1. Download 'data' folder from GooglE Drive.
@@ -93,6 +92,7 @@ gdown --folder https://drive.google.com/drive/folders/1-C93zsbEiat-fKGBOSCEpvC3O
 unzip data/linear_reward.zip
 unzip data/Tmaze.zip
 unzip data/linear_shock.zip
+```
 ---
 
 # Data Analysis
