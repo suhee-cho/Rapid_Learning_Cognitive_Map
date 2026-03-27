@@ -71,16 +71,30 @@ Estimated runtimes for a single trial:
 
 # Using Example Data
 
-If you prefer to use pre-generated data to reproduce the results from the manuscript, you can do so by unzipping:
+If you prefer to use pre-generated data to reproduce the results from the manuscript, you can download the example data from Google Drive.
 
-`example_data.zip`
-
-Run:
+### Download the data by running a command (recommended)
 
 ```bash
-unzip example_data.zip
+pip install gdown
+gdown --folder https://drive.google.com/drive/folders/1-C93zsbEiat-fKGBOSCEpvC3OcdtIM45
 ```
+
+### Download the data manually
+**Download link:**  
+[Download dataset](https://drive.google.com/drive/folders/1-C93zsbEiat-fKGBOSCEpvC3OcdtIM45?usp=sharing)
+
+### Instructions
+1. Download 'data' folder from GooglE Drive.
+2. Move the downloaded folder into the project root directory.
+3. Unzip the files by running:
+
+```bash
+unzip data/linear_reward.zip
+unzip data/Tmaze.zip
+unzip data/linear_shock.zip
 ---
+
 # Data Analysis
 
 We provide separate Jupyter notebooks for analyzing the outputs of different simulation scenarios: 
