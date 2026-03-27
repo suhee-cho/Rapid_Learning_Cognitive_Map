@@ -1,0 +1,10 @@
+bluepyopt==1.14.16
+Brian2==2.7.1
+ipynb==0.5.1
+matplotlib==3.9.2
+numpy==1.26.4
+pandas==3.0.1
+scikit-learn==1.7.2
+scipy==1.14.1
+sns==0.13.2
+tqdm==4.67.3

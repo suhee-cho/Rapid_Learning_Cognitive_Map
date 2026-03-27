@@ -44,24 +44,22 @@ pip install -r requirements.txt
 # Generating Simulation Data
 
 To generate your own data, run the notebook:
-<mark style="background-color: lightyellow">
-generate_data.ipynb
-</mark>
 
-Note that in the paper, results are based on averages over 10 independent runs (called trials) of the simulated experiment, each with its own random seed.
+`code/generate_data.ipynb`
+
+Note that the results reported in the paper are based on averages over **10 independent runs** (referred to as *trials*), each initialized with a different random seed.
 
 Before running the simulations, set the variable:
-<mark style="background-color: lightyellow">
-trial_number
-</mark>
 
-to the desired number of trials you wish to run.
+`trial_number`
+
+to the desired number of trials.
 
 ### Runtime Expectations
 
-On a standard computer, generating data for **one lap** takes approximately **20 minutes**.
+On a standard computer, generating data for **one online simulation lap** takes approximately **20 minutes**.
 
-Therefore, the estimated runtimes for a single trial are:
+Estimated runtimes for a single trial:
 
 | Simulation | Laps | Approximate Runtime |
 |-------------|------|---------------------|
@@ -71,6 +69,18 @@ Therefore, the estimated runtimes for a single trial are:
 
 ---
 
+# Using Example Data
+
+If you prefer to use pre-generated data to reproduce the results from the manuscript, you can do so by unzipping:
+
+`example_data.zip`
+
+Run:
+
+```bash
+unzip example_data.zip
+```
+---
 # Data Analysis
 
 We provide separate Jupyter notebooks for analyzing the outputs of different simulation scenarios: 
@@ -84,18 +94,14 @@ We provide separate Jupyter notebooks for analyzing the outputs of different sim
 ### Using Example Data
 
 If you want to analyze the example data included in the repository, set:
-<mark style="background-color: lightyellow">
-use_example = True
-</mark>
+`use_example = True`
 
 in the first code block.
 
 ### Using Your Own Generated Data
 
 If you generated new simulation data, set:
-<mark style="background-color: lightyellow">
-trial_number
-</mark>
+`trial_number`
 
 to the number of trials (random seeds) used during data generation.
 

@@ -4,7 +4,7 @@ import numpy as np
 from common_functions import *
 
 base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2])
-data_path = os.path.join(base_path,"data/linear_reward")
+data_path = os.path.join(base_path,"results/linear_reward")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
 def sample_spatial_points(unit_gran):
@@ -45,7 +45,7 @@ def sample_place_cells(n_neurons, place_cell_ratio, seed=11111):
     phi_mid = np.vstack((phi_mid_row, phi_mid_col))
 
     place_fields = {neuron_id:phi_mid[i] for i, neuron_id in enumerate(place_cells)}
-    save_place_fields(place_fields)
+    save_place_fields(place_fields,pklf_name)
 
     return place_fields, place_cells, phi_mid
 
@@ -323,17 +323,14 @@ def inhom_poisson(lambda_, start_position, stop_position, t_max, phi_mid, seed, 
         return poisson_proc
 
     # Your evaluate_lambda_t uses NumPy internally; compute then move to backend
-    lambda_t_cpu = evaluate_lambda_t(poisson_proc, start_position,
+    lambda_t = evaluate_lambda_t(poisson_proc, start_position,
                                      stop_position - start_position, phi_mid, mice_speed)
-    lam_xp = to_xp(lambda_t_cpu)
-    t_xp   = to_xp(poisson_proc)
 
     if seed is not None:
-        xp.random.seed(seed)
-    keep = lam_xp >= xp.random.rand(t_xp.shape[0])
+        np.random.seed(seed)
+    keep = lambda_t >= np.random.rand(poisson_proc.shape[0])
 
-    kept = t_xp[keep]
-    return to_cpu(kept)
+    return poisson_proc[keep]
 
 
 def _avg_rate(rate, bin_, len_sim=rest_time):

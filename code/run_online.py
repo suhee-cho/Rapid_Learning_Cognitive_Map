@@ -5,32 +5,33 @@ from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
-base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-1])
-sys.path.insert(0, os.path.join(base_path, "functions"))
+base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2])
+data_path = os.path.join(base_path,"results")
+sys.path.insert(0, os.path.join(base_path, "code/functions"))
 
 from global_variables import *
 from common_functions import init_weights, init_layervars, save_place_fields
 from common_functions import concat_spike_trains, generate_spike_byInput
 from common_functions import ET_update, plateau_update, BTSP_update, PS_update, feat_weight_update
 
-def run_online(mode, simul_trial, save_lap, pause_state=[], verbose=False):
+def run_online(mode, simul_trial, save_lap, pause_state=[], seed=12345, verbose=False):
 
     if mode == 0:
-        file_dir = os.path.join(base_path,"linear_reward")
+        file_dir = os.path.join(data_path,"linear_reward")
         from linear_reward_variables import actions, num_CA3_neurons, num_CA1_neurons
         from linear_reward_variables import tot_lap, exploration_actions, start, feature_speed, MI_vector, num_features
         from linear_reward_functions import retreive_ID_from_position, generate_place_field, presence_update
         from linear_reward_functions import generate_spike_byPlaceAndInput, load_PF_starts
 
     elif mode == 1:
-        file_dir = os.path.join(base_path,"Tmaze")
+        file_dir = os.path.join(data_path,"Tmaze")
         from Tmaze_variables import actions, num_CA3_neurons, num_CA1_neurons
         from Tmaze_variables import tot_lap, exploration_actions, start, feature_speed, MI_vector, num_features
         from Tmaze_functions import retreive_ID_from_position, generate_place_field, presence_update
         from Tmaze_functions import generate_spike_byPlaceAndInput, load_PF_starts
 
     elif mode == 2:
-        file_dir = os.path.join(base_path,"linear_shock")
+        file_dir = os.path.join(data_path,"linear_shock")
         from linear_shock_variables import actions, num_CA3_neurons, num_CA1_neurons
         from linear_shock_variables import tot_lap, exploration_actions, start, feature_speed, MI_vector, num_features
         from linear_shock_functions import retreive_ID_from_position, generate_place_field, presence_update
@@ -40,16 +41,16 @@ def run_online(mode, simul_trial, save_lap, pause_state=[], verbose=False):
     for trial in range(simul_trial):
         print("Running %dth simulation"%(trial+1))
         foldername = "trial"+str(trial)
-        os.makedirs(os.path.join(file_dir,"results",foldername), exist_ok=True)
+        os.makedirs(os.path.join(file_dir,foldername), exist_ok=True)
 
         # Initialize variables
-        initial_seed = int(trial*1e6)
+        initial_seed = int(seed+trial*1e5)
 
         w_CA3_CA3, w_CA3_CA1, w_CA1_feat, connectivity_CA3_CA3, connectivity_CA3_CA1 = init_weights(num_CA3_neurons,num_CA1_neurons,num_features)
         
         pklf_name = os.path.join(file_dir, "PF_peak_data.pkl")
         try: CA3_place_fields = load_PF_starts()
-        except: CA3_place_fields, _, _ = generate_place_field(initial_seed,num_CA3_neurons,pklf_name)
+        except: CA3_place_fields, _, _ = generate_place_field(initial_seed,num_CA3_neurons)
         del pklf_name
 
         init_w_CA3_CA3 = copy.deepcopy(w_CA3_CA3); init_w_CA3_CA1 = copy.deepcopy(w_CA3_CA1)
@@ -153,7 +154,7 @@ def run_online(mode, simul_trial, save_lap, pause_state=[], verbose=False):
                     PT_CA1 -= PT_CA1 * (dt / tpost)
                 
                 if (lap%save_lap == 0)and(current_unit_ID+1 in pause_state):
-                    file_out = os.path.join(file_dir,"data",foldername,"lap_%d_pause_%d.npz"%(lap,current_unit_ID+1))
+                    file_out = os.path.join(file_dir,foldername,"lap_%d_pause_%d.npz"%(lap,current_unit_ID+1))
                     np.savez_compressed(file_out,
                         error_list=error_list,PS_list=PS_list,
                         w_CA3_CA3=w_CA3_CA3,w_CA3_CA1=w_CA3_CA1,w_CA1_feat=w_CA1_feat)
@@ -161,7 +162,7 @@ def run_online(mode, simul_trial, save_lap, pause_state=[], verbose=False):
                 current_position = current_position + actions[action_ID]
 
             if lap%save_lap == 0:
-                file_out = os.path.join(file_dir,"data",foldername,"lap_%d.npz"%lap)
+                file_out = os.path.join(file_dir,foldername,"lap_%d.npz"%lap)
                 np.savez_compressed(file_out,
                     error_list=error_list,PS_list=PS_list,
                     w_CA3_CA3=w_CA3_CA3,w_CA3_CA1=w_CA3_CA1,w_CA1_feat=w_CA1_feat)
@@ -170,17 +171,17 @@ def run_online(mode, simul_trial, save_lap, pause_state=[], verbose=False):
 def find_place_cells(mode, trial_number):
 
     if mode == 0:
-        file_dir = os.path.join(base_path,"results/linear_reward")
+        file_dir = os.path.join(data_path,"linear_reward")
         from linear_reward_variables import num_CA1_neurons, tot_lap
         from linear_reward_functions import sample_spatial_points, get_tuning_curve, load_PF_starts
     
     elif mode == 1:
-        file_dir = os.path.join(base_path,"results/Tmaze")
+        file_dir = os.path.join(data_path,"Tmaze")
         from Tmaze_variables import num_CA1_neurons, tot_lap
         from Tmaze_functions import sample_spatial_points, get_tuning_curve, load_PF_starts
 
     elif mode == 2:
-        file_dir = os.path.join(base_path,"results/linear_shock")
+        file_dir = os.path.join(data_path,"linear_shock")
         from linear_shock_variables import num_CA1_neurons, tot_lap
         from linear_shock_functions import sample_spatial_points, get_tuning_curve, load_PF_starts
 
@@ -190,10 +191,10 @@ def find_place_cells(mode, trial_number):
 
     for seed in tqdm(range(trial_number)):
         foldername = "trial" + str(seed)
-        CA3_place_fields = load_PF_starts(os.path.join(file_dir, "PF_peak_data.pkl"))
+        CA3_place_fields = load_PF_starts(os.path.join(data_path, "PF_peak_data.pkl"))
 
         for load_episode in range(1,tot_lap+1):
-            w_CA3_CA1 = np.load(os.path.join(base_path,"files",foldername,"simul_trial_%d_exp.npz"%(load_episode)))["w_CA3_CA1"]
+            w_CA3_CA1 = np.load(os.path.join(file_dir,foldername,"lap_%d.npz"%load_episode))["w_CA3_CA1"]
             CA1_activity = np.zeros((place_peak_position.shape[0],num_CA1_neurons))
 
             for ll in range(place_peak_position.shape[0]):
@@ -201,7 +202,7 @@ def find_place_cells(mode, trial_number):
                 CA3_FR = get_tuning_curve(position, list(CA3_place_fields.values()))*infield_rate*theta_mod_factor
                 CA1_activity[ll,:] = input_driven_rate(np.arange(num_CA1_neurons), CA3_FR, w_CA3_CA1, rate_shift=5)
 
-            np.savez_compressed(os.path.join(base_path, "files", foldername, "activity/CA1_activity_lap_"+str(load_episode)+".npz"),CA1_activity=CA1_activity, place_thr_FR=place_thr_FR, unit_gran=unit_gran)
+            np.savez_compressed(os.path.join(file_dir, foldername, "activity/CA1_activity_lap_"+str(load_episode)+".npz"),CA1_activity=CA1_activity, place_thr_FR=place_thr_FR, unit_gran=unit_gran)
 
             place_cell_idx = np.where((np.max(CA1_activity,axis=0)>=place_thr_FR))[0]
             place_field_sorted_idx = place_cell_idx[np.argsort(np.argmax(CA1_activity[:,place_cell_idx],axis=0))]
@@ -209,5 +210,5 @@ def find_place_cells(mode, trial_number):
             CA1_place_fields = {neuron_id:np.array(place_peak_position[place_peak_idx[neuron_id]]) for neuron_id in place_field_sorted_idx}
             print("%d place cell identified after lap %d!"%(len(place_cell_idx),load_episode))
 
-            pklf_name = os.path.join(file_dir, "data", foldername, "detected_PC/CA1_PF_lap_"+str(load_episode)+".pkl")
+            pklf_name = os.path.join(file_dir, foldername, "detected_PC/CA1_PF_lap_"+str(load_episode)+".pkl")
             save_place_fields(CA1_place_fields, pklf_name)

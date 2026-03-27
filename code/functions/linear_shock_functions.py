@@ -5,7 +5,7 @@ from common_functions import *
 from tqdm import tqdm
 
 base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2])
-data_path = os.path.join(base_path,"data/linear_shock")
+data_path = os.path.join(base_path,"results/linear_shock")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
 def compute_transition_matrix(num_states, value_states, possible_actions, end_state=None, softmax_coeff=1):
@@ -133,7 +133,7 @@ def sample_place_cells(n_neurons, place_cell_ratio, seed=11111):
     phi_mid = np.vstack((phi_mid_row, phi_mid_col))
 
     place_fields = {neuron_id:phi_mid[i] for i, neuron_id in enumerate(place_cells)}
-    save_place_fields(place_fields)
+    save_place_fields(place_fields,pklf_name)
 
     return place_fields, place_cells, phi_mid
 
@@ -141,7 +141,7 @@ def generate_place_field(initial_seed, num_neurons):
     
     np.random.seed(initial_seed)
 
-    place_fields, place_cell_ID, phi_mid_array = sample_place_cells(num_neurons,place_cell_ratio,initial_seed,initial_seed)
+    place_fields, place_cell_ID, phi_mid_array = sample_place_cells(num_neurons,place_cell_ratio,initial_seed)
     place_cell_ID_list = generate_place_cell_ID_list(place_cell_ID, phi_mid_array)
 
     return place_fields, place_cell_ID, place_cell_ID_list

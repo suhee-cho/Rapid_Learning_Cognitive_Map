@@ -433,7 +433,6 @@ def save_place_fields(place_fields, pklf_name):
     :param place_fields: dict: neuron id:place field start
     :param pklf_name: name of saved file
     """
-
     with open(pklf_name, "wb") as f:
         pickle.dump(place_fields, f, protocol=pickle.HIGHEST_PROTOCOL)
 
