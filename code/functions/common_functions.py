@@ -1,3 +1,37 @@
+"""
+common_functions.py
+===================
+Shared utility functions used by run_online.py, run_offline.py, and all
+task-specific function modules.
+
+Attribution guide
+-----------------
+Functions are tagged with one of three labels:
+
+  [NEW]           — written for this project; no equivalent in Ecker et al, 2022, ELife.
+  [REVISED]       — adapted from Ecker et al. (https://github.com/KaliLab/ca3net);
+                    core logic is preserved but the interface or implementation
+                    has been meaningfully changed (e.g., extended to 2-D,
+                    vectorised, or combined with additional logic).
+  [COPIED]        — taken from Ecker et al. with only cosmetic edits.
+
+Sections
+--------
+1.  Weight / layer initialisation            (NEW)
+2.  Rate-to-spike helpers                    (REVISED / NEW)
+3.  Spike-train utilities                    (NEW)
+4.  BTSP learning rule components            (NEW)
+5.  Feature prediction weight update         (NEW)
+6.  Poisson spike generation                 (REVISED / COPIED)
+7.  Curve fitting                            (NEW)
+8.  Brian2 monitor post-processing           (REVISED)
+9.  LFP estimation & signal processing       (REVISED / COPIED)
+10. Save / load helpers                      (REVISED / COPIED)
+11. Misc. utilities                          (REVISED / COPIED)
+12. Oscillation detection                    (REVISED / COPIED)
+13. Bayesian replay decoding                 (REVISED)
+"""
+
 import os, pickle
 from global_variables import *
 from copy import deepcopy
@@ -10,26 +44,82 @@ from scipy.signal import convolve2d
 
 import numpy as np
 
+# =============================================================================
+# 1. Weight / layer initialisation  [NEW]
+# =============================================================================
+
 def init_weights(num_CA3_neurons, num_CA1_neurons, num_features):
+    """
+    Initialise all three synaptic weight matrices and their connectivity masks.
+
+    Weights are drawn from a narrow Gaussian centred at w_init.  The sparse
+    connectivity masks (CA3_CA3_connection_prob and CA3_CA1_connection_prob) are
+    applied by zeroing weights at unconnected entries.  No self-connections for
+    the CA3 recurrent matrix.
+
+    Returns
+    -------
+    w_CA3_CA3         : (num_CA3, num_CA3) — recurrent CA3 weights
+    w_CA3_CA1         : (num_CA3, num_CA1) — CA3→CA1 feedforward weights
+    w_CA1_feat        : (num_CA1, num_features) — CA1→feature prediction weights (zeros)
+    connectivity_CA3_CA3 : (num_CA3, num_CA3) bool — fixed structural mask
+    connectivity_CA3_CA1 : (num_CA3, num_CA1) bool — fixed structural mask
+    """
     w_CA3_CA3 = np.random.normal(w_init,w_init*1e-2,size=(num_CA3_neurons, num_CA3_neurons))
     w_CA3_CA1 = np.random.normal(w_init,w_init*1e-2,size=(num_CA3_neurons, num_CA1_neurons))
     w_CA1_feat = np.zeros((num_CA1_neurons, num_features), dtype=float)
 
     connectivity_CA3_CA3 = (np.random.rand(num_CA3_neurons, num_CA3_neurons) < CA3_CA3_connection_prob) & (np.eye(num_CA3_neurons) == 0)
     connectivity_CA3_CA1 = (np.random.rand(num_CA3_neurons, num_CA1_neurons) < CA3_CA1_connection_prob)
-    
-    # Disconnect unconnected neurons
+
+    # Zero out synapses that do not exist in the structural connectivity graph.
     w_CA3_CA3[connectivity_CA3_CA3==False] = 0
     w_CA3_CA1[connectivity_CA3_CA1==False] = 0
     return w_CA3_CA3, w_CA3_CA1, w_CA1_feat, connectivity_CA3_CA3, connectivity_CA3_CA1
 
 def init_layervars(num_neurons):
+    """
+    Initialise per-neuron dynamic state variables for one hippocampal layer.
+
+    Returns zero arrays for:
+        ET               — eligibility trace (pre-synaptic BTSP variable)
+        PT               — plateau trace (post-synaptic BTSP variable)
+        plateau_flag     — bool mask: neuron is currently in a plateau state
+        plateau_refractory — countdown (ms) before the neuron can plateau again
+        FR               — instantaneous firing rate [Hz]
+    """
     ET = np.zeros((num_neurons), dtype=float); PT = np.zeros((num_neurons), dtype=float)
     plateau_flag = np.zeros((num_neurons), dtype=bool); plateau_refractory = np.zeros((num_neurons), dtype=int)
     FR = np.zeros(num_neurons)
     return ET, PT, plateau_flag, plateau_refractory, FR
 
+# =============================================================================
+# 2. Rate-to-spike helpers  [NEW]
+# =============================================================================
+
 def input_driven_rate(neuron_ids, CA3_activity, w, rate_shift=rate_shift_CA1, rate_slope=rate_slope_CA1):
+    """
+    Compute post-synaptic firing rates from upstream (CA3) activity through weights w.
+
+    Uses a sigmoid transfer function:  rate = max_input_FR * σ(CA3·w * scale)
+    where scale = 0.02 normalises the weighted sum to a reasonable sigmoid input range.
+
+    Parameters
+    ----------
+    neuron_ids : int or array-like
+        Index / indices of target (post-synaptic) neurons.
+    CA3_activity : np.ndarray, shape (num_CA3,)
+        Pre-synaptic firing rates [Hz].
+    w : np.ndarray, shape (num_CA3, num_post)
+        Synaptic weight matrix.
+    rate_shift, rate_slope : float
+        Sigmoid parameters (threshold and gain).
+
+    Returns
+    -------
+    act : float or np.ndarray
+        Predicted firing rate(s) [Hz].
+    """
     # Ensure backend arrays                          # shape: (N_pre, N_post)
 
     scale = 0.02  # Avg input through a single synapse
@@ -47,6 +137,31 @@ def input_driven_rate(neuron_ids, CA3_activity, w, rate_shift=rate_shift_CA1, ra
     return act
 
 def generate_spike_byInput(neuron_ids, t_max, w, upstream_activity, seed=11111):
+    """
+    Generate CA1 Poisson spike trains driven purely by synaptic input.
+
+    Firing rate for each neuron is computed by `input_driven_rate` from the
+    upstream (CA3) activity vector and the weight matrix w.  Spike trains are
+    thinned by a refractory period filter afterward.
+
+    Parameters
+    ----------
+    neuron_ids : array-like
+        Indices of neurons to generate spikes for.
+    t_max : float
+        Duration [s].
+    w : np.ndarray, shape (num_CA3, num_CA1)
+        Synaptic weights.
+    upstream_activity : np.ndarray, shape (num_CA3,)
+        Pre-synaptic firing rates [Hz].
+    seed : int
+        Random seed (incremented per neuron).
+
+    Returns
+    -------
+    spike_trains : list of lists
+        One spike-time list [s] per neuron.
+    """
     # generate spike trains
     spike_trains = []
     for neuron_id in neuron_ids:
@@ -61,6 +176,23 @@ def generate_spike_byInput(neuron_ids, t_max, w, upstream_activity, seed=11111):
     return spike_trains
 
 def add_spike_train(place_cell_ID, spike_trains, place_spikes):
+    """
+    Append additional spikes to selected neurons' spike trains and re-apply refractoriness.
+
+    Parameters
+    ----------
+    place_cell_ID : array-like of int
+        Neuron indices to which spikes should be appended.
+    spike_trains : list of arrays
+        Existing spike trains (one per neuron); modified in-place.
+    place_spikes : list of arrays
+        New spike times to append; place_spikes[i] is appended to spike_trains[place_cell_ID[i]].
+
+    Returns
+    -------
+    spike_trains : list of arrays
+        Updated spike trains after appending and applying the refractory filter.
+    """
     ii=0
     for IDs in place_cell_ID:
         spike_trains[IDs] = np.append(spike_trains[IDs],place_spikes[ii])
@@ -69,7 +201,28 @@ def add_spike_train(place_cell_ID, spike_trains, place_spikes):
 
     return spike_trains
 
+# =============================================================================
+# 3. Spike-train utilities  [NEW]
+# =============================================================================
+
 def concat_spike_trains(spike_trains, num_neuron):
+    """
+    Flatten a list-of-lists spike representation into two parallel arrays.
+
+    Parameters
+    ----------
+    spike_trains : list of lists
+        spike_trains[i] contains spike times [s or ms] for neuron i.
+    num_neuron : int
+        Total number of neurons (must equal len(spike_trains)).
+
+    Returns
+    -------
+    spiking_neurons : np.ndarray
+        Neuron index for each spike event.
+    spike_times : np.ndarray
+        Corresponding spike times.
+    """
     spiking_neurons = 0 * np.ones_like(spike_trains[0])
     spike_times = np.asarray(spike_trains[0])
     for neuron_id in range(1, num_neuron):
@@ -81,15 +234,61 @@ def concat_spike_trains(spike_trains, num_neuron):
 
 
 def find_PF_peak(act_array):
-    # peak_idx = np.argmax(act_array,axis=0)
-    # place_cell_idx = np.where((np.max(act_array,axis=0)>=place_thr_FR))[0]
+    """
+    Find the spatial index of each CA1 neuron's peak activity (last occurrence in case of ties).
+
+    Uses the last rather than the first occurrence of the maximum to break ties
+    consistently when multiple spatial bins have equal peak activity.
+
+    Parameters
+    ----------
+    act_array : np.ndarray, shape (num_positions, num_neurons)
+        CA1 activity across spatial positions (rows) for each neuron (columns).
+
+    Returns
+    -------
+    reordered_peak_index : np.ndarray, shape (num_neurons,)
+        Index along the position axis of each neuron's peak activity.
+    """
     rev = act_array[::-1,:]
     last_occurrence_reversed_index = np.argmax(rev,axis=0)
     reordered_peak_index = rev.shape[0] - 1 - last_occurrence_reversed_index
 
     return reordered_peak_index
 
+# =============================================================================
+# 4. BTSP learning rule components  [NEW]
+# =============================================================================
+
 def plateau_probability_calc(input_FR, target_FR, base_prob, p_slope, min_prob=0):
+    """
+    Compute the per-neuron probability of plateau potential initiation.
+
+    The probability is a product of two terms:
+      - Individual potentiation: how strongly this neuron fires relative to
+        its in-field maximum (capped at 1).
+      - Layer-wise inhibition: a sigmoid function of the gap between the
+        population-average rate and the target rate; when the population
+        fires too fast (above target_FR), probability collapses to min_prob.
+
+    Parameters
+    ----------
+    input_FR : np.ndarray, shape (num_neurons,)
+        Current instantaneous firing rates [Hz].
+    target_FR : float
+        Target population firing rate [Hz] for homeostatic control.
+    base_prob : float
+        Baseline plateau probability at the target rate.
+    p_slope : float
+        Sigmoid slope controlling how sharply the probability drops above target_FR.
+    min_prob : float
+        Floor probability (prevents complete suppression).
+
+    Returns
+    -------
+    firing_prob : np.ndarray, shape (num_neurons,)
+        Per-neuron plateau initiation probability.
+    """
     firing_prob = np.zeros(len(input_FR))
     for cell_id in range(len(input_FR)):
         layerwise_FR = np.average(input_FR)
@@ -103,6 +302,31 @@ def plateau_probability_calc(input_FR, target_FR, base_prob, p_slope, min_prob=0
     return firing_prob
 
 def ET_update(t, spike_times, spiking_neurons, activity, ET=ET_amp):
+    """
+    Update the eligibility trace (ET) array at time step t.
+
+    For every neuron that fired at time t, its eligibility trace is
+    incremented by ET_amp.  Traces that fall below the threshold `act_thr`
+    are reset to zero to prevent hyper-depression from near-zero traces.
+
+    Parameters
+    ----------
+    t : int
+        Current simulation time step [ms].
+    spike_times : np.ndarray
+        Spike event times (ms, already offset to the current dA_granularity window).
+    spiking_neurons : np.ndarray of int
+        Neuron index for each entry in spike_times.
+    activity : np.ndarray, shape (num_neurons,)
+        Current eligibility trace values (modified in-place).
+    ET : float
+        Amplitude added to the trace on each spike.
+
+    Returns
+    -------
+    activity : np.ndarray
+        Updated eligibility trace array.
+    """
 
     if spike_times.size != 0:
         spiking_neuron = spiking_neurons[spike_times == t]
@@ -115,6 +339,52 @@ def ET_update(t, spike_times, spiking_neurons, activity, ET=ET_amp):
     return activity
 
 def plateau_update(firing_rate, activity, target_FR, plateau_flag, plateau_refractory, base_prob=base_prob_CA1, p_slope=firing_prob_slope_CA1, min_prob=0, PS=-1, seed=11111, PT=plateau_amp, verbose=False):
+    """
+    Stochastically trigger / terminate plateau potentials and update the PT trace.
+
+    Each time step, neurons that are not already in plateau and not in the
+    post-plateau refractory window can initiate a plateau with probability
+    given by `plateau_probability_calc`.  A plateau ends when the neuron's
+    eligibility trace drops below `act_thr`.
+
+    When `PS` (perceived salience) is provided (≥ 0), both the target firing
+    rate and the plateau probability are scaled upward, and the plateau
+    amplitude is attenuated — this allows faster learning in surprising
+    (high-salience) contexts without over-potentiating weights.
+
+    Parameters
+    ----------
+    firing_rate : np.ndarray, shape (num_neurons,)
+        Instantaneous firing rates [Hz].
+    activity : np.ndarray, shape (num_neurons,)
+        Current plateau trace (PT); modified in-place.
+    target_FR : float
+        Target population rate for homeostatic control.
+    plateau_flag : np.ndarray of bool
+        True for neurons currently in a plateau state.
+    plateau_refractory : np.ndarray of int
+        Remaining refractory countdown (ms) per neuron.
+    base_prob : float
+        Baseline plateau probability at target_FR.
+    p_slope : float
+        Slope of the sigmoid controlling plateau probability.
+    min_prob : float
+        Minimum plateau probability (floor).
+    PS : float
+        Perceived salience (−1 to disable salience modulation).
+    seed : int
+        Random seed for the stochastic plateau onset draw.
+    PT : float
+        Amplitude added to the trace when a plateau is initiated.
+    verbose : bool
+        Print plateau counts if True.
+
+    Returns
+    -------
+    activity : np.ndarray  — updated PT array
+    plateau_flag : np.ndarray of bool
+    plateau_refractory : np.ndarray of int
+    """
     
     no_prev_plateau_flag = (plateau_flag == 0)
     no_plateau_refractory = (plateau_refractory == 0)
@@ -158,6 +428,45 @@ def plateau_update(firing_rate, activity, target_FR, plateau_flag, plateau_refra
     return activity, plateau_flag, plateau_refractory
 
 def BTSP_update(A_presyn, A_postsyn, plateau_flag, w, connectivity, BTSP_scaling=1.0, verbose=False):
+    """
+    Apply the BTSP weight update rule to synapses targeting neurons in plateau.
+
+    For each post-synaptic neuron currently in a plateau (plateau_flag == True),
+    the weight update is:
+        Δw = (wmax - w) * k_pos * f_pos(ET_pre ⊗ PT_post)
+           - w          * k_neg * f_neg(ET_pre ⊗ PT_post)
+
+    where f_pos and f_neg are normalised sigmoid functions whose parameters
+    (a_pos, b_pos, a_neg, b_neg, k_pos, k_neg) are defined in global_variables.py.
+    This bidirectional rule produces LTP for high coincidence and LTD for low
+    coincidence, replicating the behavioral time-scale plasticity kernel from
+    Bittner et al. (2017).
+
+    Only neurons in plateau are updated; others are skipped for efficiency.
+    The connectivity mask enforces the structural sparsity of the network.
+
+    Parameters
+    ----------
+    A_presyn : np.ndarray, shape (num_pre,)
+        Pre-synaptic eligibility trace (ET).
+    A_postsyn : np.ndarray, shape (num_post,)
+        Post-synaptic plateau trace (PT).
+    plateau_flag : np.ndarray of bool, shape (num_post,)
+        True for neurons currently experiencing a plateau potential.
+    w : np.ndarray, shape (num_pre, num_post)
+        Current synaptic weight matrix.
+    connectivity : np.ndarray of bool, shape (num_pre, num_post)
+        Structural connectivity mask; unconnected synapses are zeroed after update.
+    BTSP_scaling : float
+        Global multiplier on the ET⊗PT product before applying the sigmoid.
+    verbose : bool
+        Print max multiplied value and max weight change if True.
+
+    Returns
+    -------
+    updated_w : np.ndarray, shape (num_pre, num_post)
+        New weight matrix after the BTSP update.
+    """
 
     A_presyn = A_presyn.reshape((-1, 1))
 
@@ -192,7 +501,35 @@ def BTSP_update(A_presyn, A_postsyn, plateau_flag, w, connectivity, BTSP_scaling
     return updated_w
 
 
+# =============================================================================
+# 5. Feature prediction weight update  [NEW]
+# =============================================================================
+
 def feat_weight_update(w_CA1_feat, CA1_FR, presence_vector):
+    """
+    Update CA1→feature weights using a single-layer delta (least-mean-squares) rule.
+
+    The prediction of the current feature presence vector is:
+        predicted = CA1_FR @ w_CA1_feat       shape: (num_features,)
+
+    The weight update minimises the squared prediction error:
+        Δw = cue_weight_LR * CA1_FR^T ⊗ error    outer product update
+
+    Parameters
+    ----------
+    w_CA1_feat : np.ndarray, shape (num_CA1, num_features)
+        Current prediction weights.
+    CA1_FR : np.ndarray, shape (num_CA1,)
+        Current CA1 firing rates [Hz].
+    presence_vector : np.ndarray, shape (num_features,)
+        Ground-truth feature presence (target for prediction).
+
+    Returns
+    -------
+    updated_w_CA1_cue : np.ndarray, shape (num_CA1, num_features)
+    error : np.ndarray, shape (num_features,)
+        Prediction error (presence_vector − predicted); used for PS_update.
+    """
     input_to_feat = np.matmul(CA1_FR, w_CA1_feat) # Has the size of 1*num_cues
     # print(input_to_cue)
     error = presence_vector-input_to_feat
@@ -200,12 +537,43 @@ def feat_weight_update(w_CA1_feat, CA1_FR, presence_vector):
     return updated_w_CA1_cue, error
 
 def PS_update(presence, MI, novelty):
+    """
+    Compute the scalar Perceived Salience (PS) from feature presence and prediction error.
+
+    PS = Σ_i  (presence_i + 1) * MI_i * |error_i|
+
+    The (presence + 1) term ensures that absent features still contribute
+    a baseline salience level.  MI_vector (motivational importance) up-weights
+    behaviorally significant features (reward, shock) relative to location cues.
+
+    Parameters
+    ----------
+    presence : np.ndarray, shape (num_features,)
+        Current feature presence vector (f_presence).
+    MI : np.ndarray, shape (num_features,)
+        Motivational importance per feature (from *_variables.py).
+    novelty : np.ndarray, shape (num_features,)
+        Per-feature prediction error magnitude (|error|).
+
+    Returns
+    -------
+    float : Perceived salience scalar.
+    """
     return np.sum((presence+1)*MI*novelty)
 
 
 
 
 
+# =============================================================================
+# 6. Poisson spike generation  [REVISED from Ecker et al.]
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# COPIED FROM Ecker et al. — helper used internally by the original hom_poisson.
+# Generates exponentially distributed inter-spike intervals replicating
+# MATLAB's exprnd() function (used in the original Ecker et al. code).
+# ---------------------------------------------------------------------------
 def _generate_exp_rand_numbers(lambda_, n_rnds, seed):
     """
     MATLAB's random exponential number
@@ -218,10 +586,31 @@ def _generate_exp_rand_numbers(lambda_, n_rnds, seed):
     np.random.seed(seed)
     return -1.0 / lambda_ * np.log(np.random.rand(n_rnds))
 
+# ---------------------------------------------------------------------------
+# REVISED FROM Ecker et al. — original used _generate_exp_rand_numbers with a fixed
+# pre-allocated buffer.  Revised to a batched loop that never pre-allocates
+# more than needed and handles arbitrarily long simulations without truncation.
+# ---------------------------------------------------------------------------
 def hom_poisson(lambda_, t_max, seed=None):
     """
-    Vectorized homogeneous Poisson spike generator.
-    Returns a CPU NumPy array for compatibility with downstream code.
+    Generate a homogeneous Poisson spike train.
+
+    Uses the inter-spike-interval method: ISIs ~ Exp(lambda_).  Spikes are
+    accumulated in batches until the desired duration t_max is covered.
+
+    Parameters
+    ----------
+    lambda_ : float
+        Firing rate [Hz].
+    t_max : float
+        Duration [s].
+    seed : int or None
+        Random seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray
+        Spike times [s] in ascending order, all < t_max.
     """
     if lambda_ <= 0 or t_max <= 0:
         return np.array([])
@@ -255,6 +644,10 @@ def hom_poisson(lambda_, t_max, seed=None):
     # Return on CPU for compatibility (downstream code expects NumPy)
     return spikes_backend
 
+
+# =============================================================================
+# 7. Curve fitting  [NEW]
+# =============================================================================
 
 def exponential_func(x, mult, gamma, baseline):
     """Exponential-like discount function: mult*gamma^x + baseline"""
@@ -319,7 +712,12 @@ def curve_fit_calc(
 
     return popt, y_expected, results
 
-# ========== process Brian2 monitors ==========
+# =============================================================================
+# 8. Brian2 monitor post-processing  [REVISED from Ecker et al.]
+# =============================================================================
+# REVISED FROM Ecker et al. — original version returned a fixed set of outputs.
+# Revised to add a `calc_ISI` flag so the function can be called cheaply when
+# ISI histograms are not needed (the common case in run_offline.py).
 
 def preprocess_monitors(SM, RM, calc_ISI=True):
     """
@@ -346,6 +744,12 @@ def preprocess_monitors(SM, RM, calc_ISI=True):
         return spike_times, spiking_neurons, rate
 
 
+# =============================================================================
+# 9. LFP estimation & signal processing  [REVISED / COPIED from Ecker et al.]
+# =============================================================================
+
+# COPIED FROM Ecker et al. — unchanged except for importing Erev_E / Erev_I from the
+# local spiking_neurons_params module rather than hard-coded constants.
 def _estimate_LFP(StateM, subset):
     """
     Estimates LFP by summing synaptic currents to PCs (assuming that all neurons are at equal distance (10 um) from the electrode)
@@ -372,8 +776,17 @@ def _estimate_LFP(StateM, subset):
 
 
 
+# =============================================================================
+# 10. Save / load helpers  [REVISED from Ecker et al.]
+# =============================================================================
+# The save_* / load_* functions below are REVISED FROM Ecker et al..
+# Core I/O logic is unchanged; file-naming conventions and data schemas were
+# updated to match this project's directory structure and variable names.
+
 # ========== 2 environments ==========
 
+# REVISED FROM Ecker et al. — extended to handle environments where some neurons
+# have no place field (non-PF neurons get randomly remapped to avoid artifacts).
 def reorder_spiking_neurons(spiking_neurons, pklf_name_tuning_curves):
     """
     Reorders spiking neurons based on the intermediate (non-ordered) place fields
@@ -596,6 +1009,12 @@ def load_LFP(pklf_name):
 # ========== misc. ==========
 
 
+# =============================================================================
+# 11. Misc. utilities  [REVISED / COPIED from Ecker et al.]
+# =============================================================================
+
+# COPIED FROM Ecker et al. — deletes spikes that are closer than `ref_per` (5 ms
+# default) to the preceding spike, enforcing a physiological refractory period.
 def refractoriness(spike_trains, ref_per=5e-3):
     """
     Delete spikes (from generated train) which are too close to each other
@@ -621,6 +1040,7 @@ def refractoriness(spike_trains, ref_per=5e-3):
 
     return spike_trains_updated
 
+# COPIED FROM Ecker et al. — utility used by slice_high_activity.
 def _get_consecutive_sublists(list_):
     """
     Groups list into sublists of consecutive numbers
@@ -839,6 +1259,7 @@ def slice_high_activity(rate, th, min_len, len_sim, bin_=10):
     #           "(bin size:%i, min length:%.1f and threshold:%.2f)!" % (bin_, min_len, th))
     return slice_idx
 
+# [NEW] — simulates animal behaviour as a Markov chain given a transition matrix P.
 def behavior_markov(P, total_time=600, start_state=0, end_state=[]):
     trajectory = np.zeros(total_time, dtype=int)
     trajectory[0] = start_state
@@ -850,6 +1271,15 @@ def behavior_markov(P, total_time=600, start_state=0, end_state=[]):
             trajectory[t:] = goal_state
             return trajectory, goal_time, goal_state
     return trajectory, np.nan, np.nan
+
+# =============================================================================
+# 12. Oscillation detection (SWR analysis)  [REVISED from Ecker et al.]
+# =============================================================================
+# The functions below (_calc_spectrum, analyse_rate, ripple, gamma, lowfreq,
+# _fisher, slice_high_activity, lowpass_filter, bandpass_filter, calc_phase,
+# analyse_estimated_LFP, calc_TFR, ripple_AC) are REVISED FROM Ecker et al..
+# Original functions supported a single slice_idx; revised to handle a list
+# of multiple high-activity windows and return averaged metrics across windows.
 
 # Detect oscillations
 
@@ -1177,7 +1607,17 @@ def analyse_estimated_LFP(StateM, subset, slice_idx=[], fs=10000.):
         Pxx = Pxx[idx]
         return t, LFP, f, Pxx
 
-# Bayesian decoding
+# =============================================================================
+# 13. Bayesian replay decoding  [REVISED from Ecker et al.]
+# =============================================================================
+# The Bayesian decoder (extract_binspikecount, calc_posterior, _evaluate_fit,
+# fit_trajectory, _shuffle_tuning_curves, _test_significance_subprocess,
+# test_significance) is REVISED FROM Ecker et al..
+# Original implemented decoding for a 1-D linear track.
+# Revised to:
+#   - support 2-D spatial environments (T-maze, L-shaped track)
+#   - accept externally computed tuning curves instead of loading from file
+#   - use a sliding window (t_incr < delta_t) for denser temporal coverage
 
 def extract_binspikecount(lb, ub, delta_t, t_incr, spike_times, spiking_neurons, tuning_curves):
     """

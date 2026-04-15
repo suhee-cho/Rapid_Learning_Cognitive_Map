@@ -1,3 +1,34 @@
+"""
+spiking_neurons_params.py
+=========================
+Biophysical parameters and Brian2 differential-equation strings for the
+Adaptive Exponential Integrate-and-Fire (AdExpIF) neuron models used in the
+offline (rest/sleep) spiking network simulation.
+
+Attribution
+-----------
+COPIED FROM ca3net (https://github.com/KaliLab/ca3net).
+
+All numerical parameters were taken directly from that repository, which in
+turn references the following experimental papers (cited inline below):
+  - Guzman et al. 2016  (CA3 PC synaptic time constants)
+  - Vyleta & Jonas 2016 (mossy-fibre AMPA kinetics)
+  - Bartos et al. 2002  (interneuron parameters, GABAergic kinetics)
+  - Lee et al. 2014     (BC excitatory synaptic constants, from CA1 data)
+  - Geiger et al. 1997  (BC excitatory synaptic delay, from DG data)
+
+Neuron types
+------------
+PC  (Pyramidal / Place Cell) — AdExpIF model with AMPA (local), AMPA-MF
+    (mossy fibre), and GABA conductances.
+BC  (Basket Cell / interneuron) — AdExpIF model with AMPA and GABA conductances.
+
+The normalisation factors (norm_PC_E, norm_PC_MF, etc.) scale synaptic
+conductance traces so that the peak of each alpha-function-shaped PSC is
+exactly 1 (dimensionless); synapse weights then directly reflect conductance
+amplitude in nS units.
+"""
+
 from brian2 import *
 # synaptic time constants:
 # rise time constants

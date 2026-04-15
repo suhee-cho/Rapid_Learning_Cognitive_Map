@@ -1,3 +1,42 @@
+"""
+Tmaze_functions.py
+==================
+Task-specific functions for the T-maze environment.
+
+This module provides the same interface as linear_reward_functions.py and
+linear_shock_functions.py so that run_online.py and run_offline.py can import
+any of the three interchangeably based on the `mode` argument.
+
+Additional T-maze–specific functions not present in the other task modules:
+  analyse_replay_type   — classifies detected SWR events by which canonical
+                          trajectory (left arm, right arm, full loop) they match.
+  plot_Tmaze_heat       — visualises a scalar per-state value on the T-maze grid.
+  compute_transition_matrix — [NEW] builds a softmax-weighted Markov transition
+                          matrix from state values (used for behavioural analysis).
+
+Attribution guide (same convention as linear_reward_functions.py):
+  sample_spatial_points       — [NEW] generates a 2-D grid covering the T-maze shape.
+  sample_place_cells          — [REVISED] same logic as linear_reward version but
+                                 adapted for the T-maze row/column geometry.
+  generate_place_field        — [NEW]
+  generate_place_cell_ID_list — [NEW]
+  presence_update             — [NEW]
+  reorder_neuron_idx          — [NEW]
+  generate_spike_byPlace      — [REVISED]
+  generate_spike_byPlaceAndInput — [NEW]
+  retreive_ID_from_position   — [NEW]
+  calc_distance               — [REVISED] no wrap-around (non-circular T-maze).
+  analyse_replay              — [REVISED] supports ordered_neuron_idx remapping
+                                 for sorting CA1 neurons by place field position.
+  analyse_replay_type         — [NEW]
+  load_PF_starts / load_tuning_curves — [REVISED]
+  get_tuning_curve / evaluate_lambda_t / inhom_poisson — [REVISED]
+  _avg_rate / load_spike_trains — [COPIED from Ecker et al.]
+
+Note: inhom_poisson in this file uses to_xp / to_cpu helpers for optional GPU
+acceleration (via CuPy), unlike the CPU-only version in linear_reward_functions.py.
+"""
+
 from global_variables import *
 from Tmaze_variables import *
 import numpy as np
@@ -8,7 +47,34 @@ base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2]
 data_path = os.path.join(base_path,"results/Tmaze")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
+# [NEW] — builds a softmax-weighted Markov transition matrix from state value estimates.
+# Used in downstream behavioural analysis notebooks; not part of the simulation itself.
 def compute_transition_matrix(num_states, value_states, possible_actions, end_state=None, softmax_coeff=1):
+    """
+    Build a softmax-weighted Markov transition matrix from state value estimates.
+
+    For each non-terminal state, transition probabilities to reachable next states
+    are computed as softmax(softmax_coeff * value).  Used for downstream
+    behavioural analysis (e.g., computing expected arm-choice probabilities).
+
+    Parameters
+    ----------
+    num_states : int
+        Total number of discrete T-maze states.
+    value_states : np.ndarray, shape (num_states,)
+        Estimated value (e.g., prediction signal) for each state.
+    possible_actions : np.ndarray
+        Array of action displacement vectors.
+    end_state : list of int or None
+        Absorbing terminal states (self-loop, value = inf).
+    softmax_coeff : float
+        Temperature for softmax (higher = more greedy policy).
+
+    Returns
+    -------
+    transition_matrix : np.ndarray, shape (num_states, num_states)
+    value_matrix : np.ndarray, shape (num_states, num_states)
+    """
     transition_matrix = np.zeros((num_states, num_states))
     value_matrix = np.zeros((num_states, num_states))
 
@@ -33,12 +99,41 @@ def compute_transition_matrix(num_states, value_states, possible_actions, end_st
     return transition_matrix, value_matrix
 
 def pred_norm(pred):
+    """
+    Min-max normalise a prediction array column-wise to [0, 1].
+
+    Parameters
+    ----------
+    pred : np.ndarray, shape (N, num_features)
+        Raw prediction values.
+
+    Returns
+    -------
+    norm_pred : np.ndarray, shape (N, num_features)
+        Column-normalised values in [0, 1].
+    """
     norm_pred = np.zeros_like(pred)
     pred_size = pred.max(0)-pred.min(0)
     norm_pred = (pred - pred.min(0)) / pred_size
     return norm_pred
 
 def sample_spatial_points(unit_gran=4):
+    """
+    Generate a 2-D grid of spatial sample points covering the T-maze geometry.
+
+    The grid covers the vertical stem (num_state_row states) and the horizontal
+    arm (num_state_col states) separately, with `unit_gran` sub-samples per state.
+
+    Parameters
+    ----------
+    unit_gran : int
+        Number of sample points per maze state (default 4).
+
+    Returns
+    -------
+    spatial_points : np.ndarray, shape ((num_state_row + num_state_col) * unit_gran, 2)
+        Array of (row, col) coordinates in T-maze space.
+    """
     col = (0.5+int((num_state_col)/2) * np.ones(unit_gran*(num_state_row))).reshape(-1, 1)
     col = np.vstack([col, np.linspace(1/unit_gran,num_state_col,unit_gran*int(num_state_col)).reshape(-1, 1)])
 
@@ -48,8 +143,46 @@ def sample_spatial_points(unit_gran=4):
     spatial_points = np.hstack([row, col])
     return spatial_points
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Original: detected replay on a linear track using 1-D tuning curves.
+# Revised: supports 2-D T-maze tuning curves; added optional ordered_neuron_idx
+# remapping for sorting CA1 neurons by place field position along the path.
 def analyse_replay(spike_times, spiking_neurons, rate, len_sim=rest_time, ordered_neuron_idx=None, spatial_points=sample_spatial_points(4), delta_t=10, N=100, t_incr=10, verbose=True):
+    """
+    Detect and decode significant replay events in offline spike data.
 
+    Identifies periods of high population activity (> 1.25x baseline),
+    applies Bayesian position decoding within each window, fits a linear
+    trajectory to the posterior, and tests significance against shuffled controls.
+
+    Parameters
+    ----------
+    spike_times : np.ndarray
+        Spike event times [ms].
+    spiking_neurons : np.ndarray of int
+        Neuron index for each spike.
+    rate : np.ndarray
+        Population firing rate time series.
+    len_sim : float
+        Total simulation duration [ms].
+    ordered_neuron_idx : np.ndarray or None
+        If provided, remaps neuron indices so that place-field-sorted neurons
+        appear first (enables ordered raster plots and cleaner decoding).
+    spatial_points : np.ndarray, shape (N_pos, 2)
+        Spatial positions at which tuning curves are evaluated.
+    delta_t : int
+        Bin size for spike count windowing [ms].
+    N : int
+        Number of shuffles for significance testing.
+    t_incr : int
+        Step size for sliding the decoding window [ms].
+    verbose : bool
+        Print detection results.
+
+    Returns
+    -------
+    list : [significance (1 or nan), replay_results dict]
+    """
     if len(spike_times) > 0:  # check if there is any activity
 
         slice_idx = slice_high_activity(rate, th=1.25, min_len=130, len_sim=len_sim)
@@ -96,7 +229,34 @@ def analyse_replay(spike_times, spiking_neurons, rate, len_sim=rest_time, ordere
             print("No activity!")
         return [np.nan for _ in range(20)]
 
+# [NEW] — T-maze-specific function.
+# Classifies each detected replay event into one of the canonical trajectory types
+# defined in replay_trajectory (Tmaze_variables.py).
 def analyse_replay_type(spk_time, spk_neurons, rate, replay_trajectory=replay_trajectory, save_path=None, verbose=True):
+    """
+    Classify detected replay events into canonical T-maze trajectory types.
+
+    For each trajectory type defined in `replay_trajectory` (Tmaze_variables.py),
+    the function filters spikes to the neurons whose place fields lie along that
+    trajectory, runs `analyse_replay`, and checks whether the decoded path
+    follows the canonical sequence (≥ 75% of decoded positions on the path).
+
+    Parameters
+    ----------
+    spk_time : np.ndarray
+        Spike times [ms] from the offline CA3 simulation.
+    spk_neurons : np.ndarray of int
+        Neuron index for each spike.
+    rate : np.ndarray
+        CA3 population rate time series.
+    replay_trajectory : list of lists
+        Each entry is a list of state IDs defining one canonical replay path
+        (from Tmaze_variables.replay_trajectory).
+    save_path : str or None
+        Directory path; if provided, pickles detected replay events per type.
+    verbose : bool
+        Print count of detected events per type.
+    """
     CA3_PF = load_PF_starts()
     CA3_PC_ID_list = generate_place_cell_ID_list(np.array(list(CA3_PF.keys()),dtype=int), np.array(list(CA3_PF.values())))
 
@@ -155,8 +315,21 @@ def analyse_replay_type(spk_time, spk_neurons, rate, replay_trajectory=replay_tr
 #         return np.nan, {}
     
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Identical I/O logic; path updated to this task's directory.
 def load_PF_starts(pklf_name=pklf_name):
+    """
+    Load pre-generated CA3 place field peak positions from disk.
 
+    Parameters
+    ----------
+    pklf_name : str
+        Path to the pickle file.
+
+    Returns
+    -------
+    place_fields : dict {neuron_id: np.ndarray([row, col])}
+    """
     with open(pklf_name, "rb") as f:
         place_fields = pickle.load(f, encoding="latin1")
 
@@ -186,17 +359,42 @@ def load_tuning_curves(spatial_points):
 
     return tuning_curves
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Original: assigned 1-D place field centres on a linear track.
+# Revised: partitions neurons between the vertical stem and horizontal arm of
+# the T-maze, placing each neuron's field centre within its segment.
 def sample_place_cells(n_neurons, place_cell_ratio, seed=11111):
+    """
+    Randomly assign place field centres to CA3 neurons on the T-maze.
+
+    Neurons are partitioned between the vertical stem (num_state_row states) and
+    the horizontal arm (num_state_col states) in proportion to segment length.
+
+    Parameters
+    ----------
+    n_neurons : int
+        Total number of CA3 neurons (must be >= 1000).
+    place_cell_ratio : float
+        Fraction of neurons with a place field.
+    seed : int
+        Random seed.
+
+    Returns
+    -------
+    place_fields : dict {neuron_id: np.ndarray([row, col])}
+    place_cells : np.ndarray of int
+    phi_mid : np.ndarray, shape (n_place_cells, 2)
+    """
     assert n_neurons >= 1000, "The assumptions made during the setup hold only for a reasonably big group of neurons"
 
     print("Generating place fields for %d neurons..."%n_neurons)
     neuronIDs = np.arange(0, n_neurons)
     # generate random neuronIDs being place cells and starting points for place fields
-    
+
     np.random.seed(seed)
     p = np.ones(n_neurons)*1./n_neurons
     place_cells = np.sort(np.random.choice(neuronIDs, int(n_neurons*place_cell_ratio), p=p, replace=False), kind="mergsort")
-    
+
     # Vertical part of the maze
     n_neurons_row = int(n_neurons*place_cell_ratio*(num_state_row/num_state_total))  # number of neurons in the vertical part of the maze
     phi_mid_row = np.sort(np.random.rand(n_neurons_row), kind="mergesort")[::-1] # sort in descending order
@@ -224,7 +422,18 @@ def sample_place_cells(n_neurons, place_cell_ratio, seed=11111):
     return place_fields, place_cells, phi_mid
 
 def generate_place_field(initial_seed, num_neurons):
-    
+    """
+    Wrapper: generate and save CA3 place fields for the T-maze task.
+
+    Parameters
+    ----------
+    initial_seed : int
+    num_neurons : int
+
+    Returns
+    -------
+    place_fields : dict, place_cell_ID : np.ndarray, place_cell_ID_list : list
+    """
     np.random.seed(initial_seed)
 
     place_fields, place_cell_ID, phi_mid_array = sample_place_cells(num_neurons,place_cell_ratio,initial_seed)
@@ -232,6 +441,7 @@ def generate_place_field(initial_seed, num_neurons):
 
     return place_fields, place_cell_ID, place_cell_ID_list
 
+# [NEW] — visualises per-state scalar data on the T-maze grid using imshow.
 def plot_Tmaze_heat(data,ax,colormap='RdBu_r',vmax=1.5):
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
     Tmaze_grid = np.array([state_position[ss]-[0.5,0.5] for ss in range(num_state_total)],dtype=int)
@@ -252,6 +462,18 @@ def plot_Tmaze_heat(data,ax,colormap='RdBu_r',vmax=1.5):
     return im
 
 def generate_place_cell_ID_list(place_cell_ID, phi_mid_array):
+    """
+    Group CA3 place cell IDs by which T-maze state their field centre falls in.
+
+    Parameters
+    ----------
+    place_cell_ID : np.ndarray of int
+    phi_mid_array : np.ndarray, shape (n_place_cells, 2)
+
+    Returns
+    -------
+    place_cell_ID_list : list of np.ndarray, length num_state_total
+    """
     place_cell_ID_list = []
     for ID in range(state_position.shape[0]):
         indices = np.where((phi_mid_array[:,0] >= state_position[ID,0]-0.5) & (phi_mid_array[:,0] < state_position[ID,0]+0.5)\
@@ -261,9 +483,28 @@ def generate_place_cell_ID_list(place_cell_ID, phi_mid_array):
     return place_cell_ID_list
 
 def presence_update(current_unit_ID, lap, verbose=False):
+    """
+    Build the feature presence vector f_presence for the T-maze task.
+
+    The two outcome features (left-arm and right-arm) become active when the
+    animal reaches the corresponding arm endpoint.
+
+    Parameters
+    ----------
+    current_unit_ID : int
+        Current maze state index.
+    lap : int
+        Current lap number (determines which arm is visited from single_lap).
+    verbose : bool
+        Print active features if True.
+
+    Returns
+    -------
+    f_presence : np.ndarray, shape (num_features,)
+    """
     f_presence = np.zeros((num_features), dtype=float)
     f_presence[2+current_unit_ID] = 1
-    
+
     for cc in range(len(cue_lap)):
         feature_case = -1
         if lap in cue_lap[cc]: feature_case = cc; break
@@ -281,7 +522,27 @@ def presence_update(current_unit_ID, lap, verbose=False):
     return f_presence
 
 def reorder_neuron_idx(place_cell_ID_list, place_fields, reordered_unit_list, include_cue=False):
+    """
+    Sort CA3 neuron indices by place field position along a T-maze traversal path.
 
+    For each state in `reordered_unit_list`, neurons are sorted along the local
+    movement direction so that earlier-firing neurons appear first.
+
+    Parameters
+    ----------
+    place_cell_ID_list : list of np.ndarray
+        Neuron IDs per maze state (from generate_place_cell_ID_list).
+    place_fields : dict {neuron_id: np.ndarray([row, col])}
+    reordered_unit_list : list of int
+        Ordered sequence of maze state IDs along the desired trajectory.
+    include_cue : bool
+        If True, append non-place-cell (cue) neurons interleaved at the end.
+
+    Returns
+    -------
+    np.ndarray of int
+        Neuron indices sorted by place field position along the trajectory.
+    """
     reordered_idx = list()
     for unit_idx, unit in enumerate(reordered_unit_list):
         if unit_idx == len(reordered_unit_list)-1: align_dir = state_position[unit] - state_position[reordered_unit_list[unit_idx-1]]
@@ -312,8 +573,14 @@ def reorder_neuron_idx(place_cell_ID_list, place_fields, reordered_unit_list, in
 
     return np.array(reordered_idx,dtype=int)
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Revised: extended to 2-D T-maze positions; calls the 2-D inhom_poisson below.
 def generate_spike_byPlace(neuron_ids, place_fields, start_position, stop_position, t_max, mice_speed=v_mice, seed=11111):
+    """
+    Generate CA3 spike trains driven purely by place field tuning (T-maze version).
 
+    See linear_reward_functions.generate_spike_byPlace for full documentation.
+    """
     # generate spike trains
     spike_trains = []
 
@@ -330,6 +597,11 @@ def generate_spike_byPlace(neuron_ids, place_fields, start_position, stop_positi
     return spike_trains
 
 def generate_spike_byPlaceAndInput(neuron_ids, place_fields, start_position, stop_position, t_max, w, upstream_activity, mice_speed=v_mice, seed=11111):
+    """
+    Generate CA3 spike trains combining place field drive and recurrent input (T-maze version).
+
+    See linear_reward_functions.generate_spike_byPlaceAndInput for full documentation.
+    """
     # generate spike trains
     spike_trains = []
     for neuron_id in neuron_ids:
@@ -348,24 +620,61 @@ def generate_spike_byPlaceAndInput(neuron_ids, place_fields, start_position, sto
     return spike_trains
 
 def retreive_ID_from_position(position):
+    """
+    Map a continuous 2-D position to the discrete T-maze state it falls in.
+
+    Parameters
+    ----------
+    position : array-like, shape (2,)
+        (row, col) coordinates of the animal.
+
+    Returns
+    -------
+    state_id : int, position : np.ndarray
+    """
     match_x = np.where((position[0] >= state_position[:,0]-0.5) & (position[0] < state_position[:,0]+0.5))[0]
     match_y = np.where((position[1] >= state_position[:,1]-0.5) & (position[1] < state_position[:,1]+0.5))[0]
     if match_x.size == 0 or match_y.size == 0:
         raise ValueError("No match found for position: {}".format(position))
     else: return np.intersect1d(match_x, match_y)[0], position
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Original: computed 1-D Euclidean distance. Revised: 2-D; no circular wrap-around
+# (the T-maze has dead-end arms, not a circular topology).
 def calc_distance(position, target, axis=1):
-    
+    """
+    Compute Euclidean distance between position(s) and a target on the T-maze.
+
+    No circular wrap-around (T-maze arms are dead-ends).
+
+    Parameters
+    ----------
+    position : array-like, shape (2,) or (N, 2)
+    target : array-like, shape (2,)
+    axis : int
+        Axis for absolute difference (default 1).
+
+    Returns
+    -------
+    np.ndarray, shape (N,)
+    """
     position = np.atleast_2d(position)
     target = np.asarray(target)
 
     diffs = position - target
     diffs[:, axis] = np.abs(diffs[:, axis])
-    
+
     # Euclidean norm of adjusted diffs
     return np.linalg.norm(diffs, axis=1)
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Revised: calls the 2-D calc_distance defined in this module.
 def evaluate_theta_modulation(t, start_position, phi_mid, f_theta, phase_init):
+    """
+    Compute theta-band modulation for spike thinning (T-maze version).
+
+    See linear_reward_functions.evaluate_theta_modulation for full documentation.
+    """
     try: distance = calc_distance(start_position, phi_mid) #[unit]
     except: print(start_position, phi_mid)
     phase = 2*np.pi*(f_theta*t + phase_init)
@@ -385,23 +694,57 @@ def get_tuning_curve(spatial_points, phi_mid):
 
     return tau
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Revised: supports 2-D positions and direction vectors for T-maze navigation.
 def evaluate_lambda_t(t, start_position, direction, phi_mid, mice_speed=v_mice, phase_init=0.0, theta_modulation=True):
+    """
+    Evaluate the time-varying Poisson rate lambda(t) for spike thinning (T-maze version).
+
+    See linear_reward_functions.evaluate_lambda_t for full documentation.
+    """
     x = [start_position + mice_speed*direction*ss for ss in t] # [unit]
     if len(x) == 0: return x
-    
+
     tau_x = get_tuning_curve(x, phi_mid) # kernel-filtered x
     if theta_modulation: theta_mod = evaluate_theta_modulation(t, start_position, phi_mid, f_theta, phase_init)
     else: theta_mod = 1
-   
+
     lambda_t = tau_x * theta_mod
     lambda_t[np.where(lambda_t < 0.0)] = 0.0
 
     return lambda_t
 
+# Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
+# Original: used a fixed-size buffer and 1-D position. Revised: batched hom_poisson
+# call; supports 2-D positions; optionally accelerated via CuPy (to_xp / to_cpu).
 def inhom_poisson(lambda_, start_position, stop_position, t_max, phi_mid, seed, mice_speed=v_mice):
     """
-    Generate homogeneous spikes (batched) and thin them using the inhomogeneous rate.
-    All heavy elementwise ops are done on GPU if available.
+    Generate an inhomogeneous Poisson spike train using thinning.
+
+    Draws candidate times from a homogeneous process at rate `lambda_`, then
+    retains each candidate with probability proportional to the place-field
+    tuning curve (and optional theta modulation) evaluated at the animal's
+    position at that moment.
+
+    Parameters
+    ----------
+    lambda_ : float
+        Upper bound on the firing rate [Hz] (peak in-field rate).
+    start_position, stop_position : np.ndarray, shape (2,)
+        Start and end 2-D positions for this time window [maze units].
+    t_max : float
+        Duration [s].
+    phi_mid : np.ndarray, shape (2,)
+        Place field centre [maze units].
+    seed : int
+        Random seed for thinning.
+    mice_speed : float
+        Running speed [maze units / ms].
+
+    Returns
+    -------
+    np.ndarray
+        Accepted spike times [s].
     """
     poisson_proc = hom_poisson(lambda_, t_max, seed)  # returns CPU NumPy
 

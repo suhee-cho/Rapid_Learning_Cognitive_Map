@@ -1,3 +1,54 @@
+"""
+run_offline.py
+==============
+Offline (rest/sleep) learning pipeline for the hippocampal BTSP model.
+
+Overview
+--------
+After each online (active exploration) lap the network can undergo an offline
+consolidation phase that models hippocampal sharp-wave ripple (SWR) replay.
+The pipeline has three stages:
+
+  Stage 1 — Parameter optimisation  (find_optimal_parameters)
+      A BluePyOpt CMA-ES/DEAP evolutionary algorithm searches for synaptic
+      weight scale factors that make the recurrent Brian2 network produce
+      SWR-like population bursts (150–220 Hz ripple, low background rate).
+      Optimal parameters are saved to results/<task>/optimization/.
+
+  Stage 2 — Offline spike simulation  (simulate_offline_spikes)
+      The Brian2 spiking network (CA3 + CA1 + interneurons) is run using the
+      optimised parameters and the weight matrices learned online.  Spike
+      trains and population rates are saved for downstream analysis.
+
+  Stage 3 — STDP weight update  (train_network)
+      Spike trains from Stage 2 are replayed through a rate-based STDP rule
+      to update w_CA3_CA1 (the cognitive map weights), consolidating the
+      spatial memory formed during exploration.
+
+Brian2 network used in stages 1 and 2:
+    CA3_PCs  (num_CA3_neurons)  — place cells, AdExpIF model
+    CA3_INs  (num_IN_neurons)   — fast-spiking interneurons, AdExpIF model
+    CA1_PCs  (num_CA1_neurons)  — place cells, AdExpIF model
+    CA1_INs  (num_IN_neurons)   — fast-spiking interneurons, AdExpIF model
+
+Spike sources during offline simulation:
+    MF  — mossy-fibre background (PoissonGroup to CA3_PCs, rate = rate_MF Hz)
+    cue — location-specific cue input (PoissonGroup to a subset of CA3_PCs
+          centred on pause_state), present only when pause_state >= 0.
+
+Attribution
+-----------
+Several functions in this file are adapted from the ca3net codebase
+(https://github.com/KaliLab/ca3net).  Individual functions are annotated.
+
+Public entry points
+-------------------
+    find_optimal_parameters(mode, target_trial, target_lap, ...)
+    simulate_offline_spikes(mode, target_lap, trial_number, ...)
+    train_network(mode, target_lap, trial_number, ...)
+    detect_replay_type(mode, target_lap, trial_number, ...)
+"""
+
 from tabnanny import verbose
 import os, sys, logging, traceback, gc
 import numpy as np
@@ -18,7 +69,32 @@ from global_variables import background_rate, num_IN_neurons, IN_connection_prob
 from spiking_neurons_params import *
 from common_functions import hom_poisson, analyse_rate, ripple, gamma, slice_high_activity, input_driven_rate
 
+# ---------------------------------------------------------------------------
+# REVISED FROM ca3net (https://github.com/KaliLab/ca3net)
+# Original: generated cue spikes for a single burst event.
+# Changes: generalised to accept an arbitrary spike_rates vector and
+#          an explicit duration parameter; removed Brian2 dependency.
+# ---------------------------------------------------------------------------
 def generate_cue_spikes(spike_rates, duration, round_dec=3):
+    """
+    Generate Poisson spike trains for a population of cue neurons.
+
+    Parameters
+    ----------
+    spike_rates : array-like
+        Firing rates [Hz] for each neuron in the cue population.
+    duration : float
+        Simulation duration [ms].
+    round_dec : int
+        Decimal places to round spike times to (avoids floating-point collisions).
+
+    Returns
+    -------
+    spike_times : np.ndarray
+        Concatenated spike times [s] across all neurons.
+    spiking_neurons : np.ndarray
+        Neuron index for each entry in spike_times.
+    """
     sec_dur = duration/1000
     spike_times = np.asarray(hom_poisson(spike_rates[0], t_max=sec_dur, seed=12345))
     spike_times = np.unique(np.round(spike_times,decimals=round_dec))
@@ -34,6 +110,28 @@ def generate_cue_spikes(spike_rates, duration, round_dec=3):
     return spike_times, spiking_neurons
 
 def simulate_offline_spikes(mode, target_lap, trial_number, pause_state=None, use_example=False):
+    """
+    Run the offline (rest/sleep) Brian2 simulation and save spike data.
+
+    Loads pre-optimised synaptic parameters (Stage 1) and the weight matrices
+    learned after `target_lap` online laps, then runs `offline_simulation` once
+    per trial.  Spike times and population rates for both CA3 and CA1 are saved
+    to compressed .npz files for downstream analysis and STDP training.
+
+    Parameters
+    ----------
+    mode : int
+        Task selector (0=linear_reward, 1=Tmaze, 2=linear_shock).
+    target_lap : int
+        Which online lap's weight matrices to use as the starting point.
+    trial_number : int
+        Number of trials to simulate.
+    pause_state : int or None
+        Maze state ID where the cue input is injected (models "replay seeding"
+        from a specific location).  None → spontaneous replay without a cue.
+    use_example : bool
+        If True, load from "example<N>" folders instead of "trial<N>".
+    """
     if mode == 0:
         from linear_reward_functions import load_PF_starts
         file_dir = os.path.join(base_path,"results/linear_reward")
@@ -73,6 +171,49 @@ def simulate_offline_spikes(mode, target_lap, trial_number, pause_state=None, us
                 rate_CA1_PC=rate_CA1_PC,spike_times_CA1_IN=spike_times_CA1_IN, spiking_neurons_CA1_IN=spiking_neurons_CA1_IN)
 
 def find_optimal_parameters(mode, target_trial, target_lap, pause_state=-1, offspring_size=50, max_ngen=10, use_example=False):
+    """
+    Optimise the offline network parameters using a DEAP evolutionary algorithm.
+
+    The fitness function (`NetworkEvaluator.init_simulator_and_evaluate_with_lists`)
+    runs `offline_simulation` and scores the resulting population activity on
+    six SWR criteria for each of CA3 and CA1 (12 objectives total):
+        rippleE / rippleI       — ripple-band (150–220 Hz) power in PC / IN rate
+        no_gamma_peakI          — absence of gamma-band peak in IN rate
+        ripple_ratioE / ratioI  — ripple-to-gamma power ratio
+        low_rateE               — mean PC rate close to `background_rate` Hz
+
+    Parameters to optimise (with search bounds):
+        w_PC_IN_CA3/CA1   — excitatory weight onto interneurons
+        w_IN_PC_CA3/CA1   — inhibitory weight onto place cells
+        w_IN_IN_CA3/CA1   — inhibitory weight between interneurons
+        wmx_mult_CA3/CA1  — global scale factor for the learned weight matrix
+        w_PC_MF_CA3       — mossy-fibre drive weight
+        rate_MF           — mossy-fibre background rate [Hz]
+
+    Best parameters are saved to results/<task>/optimization/parameter_lap_<N>.npz.
+
+    Parameters
+    ----------
+    mode : int
+        Task selector.
+    target_trial : int
+        Which trial's weight matrices to use for optimisation.
+    target_lap : int
+        Which lap's weight matrices to use.
+    pause_state : int
+        Maze state index for cue injection (-1 = no cue; spontaneous replay).
+    offspring_size : int
+        Population size for the evolutionary algorithm (≥ num_workers is ideal).
+    max_ngen : int
+        Maximum number of evolutionary generations.
+    use_example : bool
+        Load from "example<N>" instead of "trial<N>" folders.
+
+    Returns
+    -------
+    best : list of float
+        Optimal parameter values in the order defined by `optconf`.
+    """
     
     if mode == 0:
         from linear_reward_functions import load_PF_starts
@@ -136,6 +277,25 @@ def find_optimal_parameters(mode, target_trial, target_lap, pause_state=-1, offs
     return best
 
 def detect_replay_type(mode, target_lap, trial_number, use_example=False):
+    """
+    Classify offline CA3 replay events by trajectory type (T-maze only).
+
+    Loads saved CA3 spike data and calls `analyse_replay_type` to check
+    which of the predefined replay trajectories (e.g., left-arm, right-arm,
+    or full-loop) each detected SWR event corresponds to.  Results are
+    pickled per replay type in the trial directory.
+
+    Parameters
+    ----------
+    mode : int
+        Must be 1 (T-maze); raises ValueError otherwise.
+    target_lap : int
+        Lap whose saved offline spikes are analysed.
+    trial_number : int
+        Number of trials to process.
+    use_example : bool
+        If True, read from "example<N>" folders.
+    """
 
     if mode == 1:
         from Tmaze_functions import analyse_replay_type
@@ -151,7 +311,61 @@ def detect_replay_type(mode, target_lap, trial_number, use_example=False):
         
         analyse_replay_type(spike_times, spiking_neurons, rate, save_path=save_path)
 
+# ---------------------------------------------------------------------------
+# REVISED FROM ca3net (https://github.com/KaliLab/ca3net)
+# Original: single-population (CA3 only) recurrent network with SWR optimisation.
+# Changes:  added a second CA1 population (CA1_PCs + CA1_INs) driven by CA3→CA1
+#           weight matrix; added optional pause-state cue input (PoissonGroup)
+#           seeded from place-field tuning curves at a specific maze location.
+# ---------------------------------------------------------------------------
 def offline_simulation(mode, wmx_CA3, wmx_CA1, pause_state, PF, w_PC_IN_CA3, w_IN_PC_CA3, w_IN_IN_CA3, wmx_mult_CA3, w_PC_MF_CA3, rate_MF, w_PC_IN_CA1, w_IN_PC_CA1, w_IN_IN_CA1, wmx_mult_CA1, verbose=False):
+    """
+    Run a single offline Brian2 simulation and return all monitors.
+
+    The network consists of four Brian2 NeuronGroups:
+        CA3_PCs / CA3_INs — CA3 place cells and fast-spiking interneurons
+        CA1_PCs / CA1_INs — CA1 place cells and fast-spiking interneurons
+
+    Driving inputs:
+        MF   — mossy-fibre background (PoissonGroup, `rate_MF` Hz to all CA3_PCs)
+        cue  — location-specific cue (PoissonGroup, rates from place-field tuning
+                curves at `pause_state`); only added when pause_state >= 0.
+
+    Synaptic connections built:
+        CA3_PCs → CA3_PCs  via wmx_CA3 (scaled by wmx_mult_CA3)
+        CA3_PCs → CA3_INs  (random, CA3_CA3_connection_prob)
+        CA3_INs → CA3_PCs  (random, IN_connection_prob)
+        CA3_INs → CA3_INs  (random, IN_connection_prob)
+        CA3_PCs → CA1_PCs  via wmx_CA1 (scaled by wmx_mult_CA1)
+        CA1_PCs → CA1_INs  (random, CA3_CA1_connection_prob)
+        CA1_INs → CA1_PCs  (random, IN_connection_prob)
+        CA1_INs → CA1_INs  (random, IN_connection_prob)
+
+    Parameters
+    ----------
+    wmx_CA3, wmx_CA1 : scipy.sparse.coo_matrix
+        Learned online weight matrices (sparse COO format).
+    pause_state : int
+        Maze state to inject as cue (≥0) or -1 for no cue.
+    PF : dict {neuron_id: position}
+        CA3 place field peak positions.
+    w_PC_IN_*, w_IN_PC_*, w_IN_IN_* : float
+        Scalar synaptic weights (uniform within population pair).
+    wmx_mult_CA3/CA1 : float
+        Global multiplier applied to the sparse weight matrices before simulation.
+    w_PC_MF_CA3 : float
+        Mossy-fibre synapse weight.
+    rate_MF : float
+        Mossy-fibre background rate [Hz].
+    verbose : bool
+        If True, Brian2 reports simulation progress.
+
+    Returns
+    -------
+    Tuple of Brian2 monitor objects (SpikeMonitor, PopulationRateMonitor,
+    StateMonitor) for CA3 and CA1 PC and IN populations, plus the array of
+    recorded neuron indices and the cue-target cell IDs.
+    """
 
     if mode == 0:
         from linear_reward_variables import rest_time, num_CA3_neurons, num_CA1_neurons, state_position
@@ -256,13 +470,38 @@ def offline_simulation(mode, wmx_CA3, wmx_CA1, pause_state, PF, w_PC_IN_CA3, w_I
             StateM_PC_CA3, StateM_IN_CA3, selection_CA3,\
             StateM_PC_CA1, StateM_IN_CA1, selection_CA1, targ_cell_id
 
+# ---------------------------------------------------------------------------
+# REVISED FROM ca3net (https://github.com/KaliLab/ca3net)
+# Original: evaluated a single CA3 network; defined objectives for CA3 only.
+# Changes:  extended to handle both CA3 and CA1 populations (12 objectives
+#           instead of 6); passes W_CA1 and mode to offline_simulation.
+# ---------------------------------------------------------------------------
 class NetworkEvaluator(bpop.evaluators.Evaluator):
-    """Evaluator class required by BluePyOpt"""
+    """
+    BluePyOpt Evaluator that wraps `offline_simulation` as the fitness function.
+
+    The evolutionary algorithm minimises 12 error objectives (negated scores),
+    six per hippocampal region (CA3 and CA1):
+        rippleE, rippleI        — peak ripple power in PC / IN population
+        no_gamma_peakI          — reward absence of gamma in IN population
+        ripple_ratioE/I         — ripple-to-gamma power ratio
+        low_rateE               — mean PC rate near background (rewarded)
+    """
 
     def __init__(self, mode, W_CA3, W_CA1, cue, PF, params):
         """
-        :param W_CA3: weight matrix (passing Wee with cPickle to the slaves (as BluPyOpt does) is still the fastest solution)
-        :param params: list of parameters to fit - every entry must be a tuple: (name, lower bound, upper bound)
+        Parameters
+        ----------
+        mode : int
+            Task selector passed through to offline_simulation.
+        W_CA3, W_CA1 : scipy.sparse.coo_matrix
+            Online-learned weight matrices (serialised to workers via cPickle).
+        cue : int
+            pause_state index for the cue injection (≥0) or -1.
+        PF : dict
+            CA3 place field dictionary {neuron_id: position}.
+        params : list of (name, lower_bound, upper_bound) tuples
+            Parameters to optimise and their search bounds.
         """
         super(NetworkEvaluator, self).__init__()
         self.mode = mode
@@ -315,7 +554,37 @@ class NetworkEvaluator(bpop.evaluators.Evaluator):
             # Make sure exception and backtrace are thrown back to parent process
             raise Exception("".join(traceback.format_exception(*sys.exc_info())))
 
+# ---------------------------------------------------------------------------
+# REVISED FROM ca3net (https://github.com/KaliLab/ca3net)
+# Original: computed a subset of these metrics for CA3 only.
+# Changes:  made the function generic (takes any RM_PC/RM_BC pair) so it can
+#           be called for both CA3 and CA1 in the evaluator.
+# ---------------------------------------------------------------------------
 def analyze_related_params(RM_PC, RM_BC, len_sim=5000):
+    """
+    Compute SWR fitness metrics from Brian2 PopulationRateMonitors.
+
+    Bins the raw Brian2 rate (1 kHz) into 10 ms bins, then identifies periods
+    of sustained high activity (`slice_high_activity`), computes the power
+    spectral density via Welch's method, and extracts:
+        ripple_peakE/I   — Gaussian score for ripple frequency near 180 Hz
+        no_gamma_peakI   — 1 if no significant gamma peak in INs, else 0
+        ripple_ratioE/I  — clipped ripple/gamma power ratio
+        low_rateE        — Gaussian score for background PC rate near baseline
+
+    Parameters
+    ----------
+    RM_PC : Brian2 PopulationRateMonitor
+        Rate monitor for place cells.
+    RM_BC : Brian2 PopulationRateMonitor
+        Rate monitor for basket / fast-spiking interneurons.
+    len_sim : int
+        Simulation duration [ms] (default 5000 ms).
+
+    Returns
+    -------
+    Six float fitness scores (all positively oriented; the evaluator negates them).
+    """
     rate_PC = np.array(RM_PC.rate_).reshape(-1, 10).mean(axis=1)
     rate_BC = np.array(RM_BC.rate_).reshape(-1, 10).mean(axis=1)
     gc.collect()
@@ -346,6 +615,36 @@ def analyze_related_params(RM_PC, RM_BC, len_sim=5000):
     return ripple_peakE, ripple_peakI, no_gamma_peakI, ripple_ratioE, ripple_ratioI, low_rateE
 
 def train_network(mode, target_lap, trial_number, pause_state=None, replay_type=False, use_example=False):
+    """
+    Update w_CA3_CA1 using STDP applied to offline replay spike trains.
+
+    Loads the CA3 and CA1 spike trains generated by `simulate_offline_spikes`,
+    then calls `update_STDP` to replay them through an STDP rule that
+    strengthens connections whose CA3 spikes precede CA1 spikes.  Optionally
+    restricts the update to specific replay time windows identified by
+    `detect_replay_type`.
+
+    The updated weight matrix at each time point of interest is used to
+    recompute the CA1 activity map and identify new place cells.  Outputs:
+        results/<task>/trial<N>/lap_<L>_0_<T>_replayed.npz  — final weights
+        results/<task>/trial<N>/activity/CA1_activity_lap_<L>_replay_<T>.npz
+
+    Parameters
+    ----------
+    mode : int
+        Task selector.
+    target_lap : int
+        Lap whose weights / spike data to use.
+    trial_number : int
+        Number of trials to process.
+    pause_state : int or None
+        Which pause-state spike file to load (None = end-of-lap replay).
+    replay_type : bool
+        If True, restrict STDP to time intervals of classified replay events
+        (requires prior `detect_replay_type` output).
+    use_example : bool
+        Load from "example<N>" folders.
+    """
     
     if mode == 0:
         file_dir = os.path.join(base_path,"results/linear_reward")
@@ -409,6 +708,40 @@ def train_network(mode, target_lap, trial_number, pause_state=None, replay_type=
             np.savez_compressed(os.path.join(file_dir,foldername, "activity/CA1_activity_lap_%d_replay_%d.npz"%(target_lap,timepoint_interest[tt])),CA1_activity=CA1_activity, place_thr_FR=place_thr_FR, unit_gran=4)
 
 def update_STDP(init_w, spk_neuron_pre, spk_neuron_post, spk_time_pre, spk_time_post, connectivity, timepoint_interest, tau=30, eta=1e-3):
+    """
+    Apply a simplified all-to-all STDP rule to offline replay spike trains.
+
+    Both pre- and post-synaptic eligibility traces accumulate at each spike
+    event and decay exponentially with time constant `tau`.  Weight updates:
+        w[pre, :]  += dApre  when CA3 neuron fires   (pre-synaptic trace)
+        w[:, post] += dApost when CA1 neuron fires   (post-synaptic trace)
+
+    Weights are clipped to [0, wmax] at every step and zeroed at unconnected
+    synapses (masked by `connectivity`).  Snapshots are taken at each time
+    point in `timepoint_interest` (typically the end of each replay event).
+
+    Parameters
+    ----------
+    init_w : np.ndarray, shape (num_CA3, num_CA1)
+        Initial weight matrix (copy is made; input is not modified).
+    spk_neuron_pre / spk_neuron_post : np.ndarray of int
+        Neuron indices of CA3 / CA1 spike events (from offline simulation).
+    spk_time_pre / spk_time_post : np.ndarray of int
+        Spike times [ms] corresponding to the neuron index arrays.
+    connectivity : np.ndarray of bool, shape (num_CA3, num_CA1)
+        Structural connectivity mask; unconnected entries stay zero.
+    timepoint_interest : np.ndarray of int
+        Time points [ms] at which to snapshot the weight matrix.
+    tau : float
+        Eligibility trace decay time constant [ms].
+    eta : float
+        Learning rate (dApre = dApost = eta).
+
+    Returns
+    -------
+    w_array : np.ndarray, shape (len(timepoint_interest), num_CA3, num_CA1)
+        Weight matrix snapshots at each time point of interest.
+    """
     from global_variables import dt, wmax
 
     w = cp.deepcopy(init_w)

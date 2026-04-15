@@ -1,3 +1,12 @@
+"""
+plots.py  [NEW]
+===============
+Plotting utilities for visualising simulation results across all three task
+environments (linear reward, linear shock, T-maze).
+
+All functions in this file are new (written for this project).
+"""
+
 import os
 import numpy as np
 import seaborn as sns
@@ -15,7 +24,26 @@ def create_gradient(color1, color2, num_steps):
 
 
 def average_weight(w, x_dim, y_dim):
-    
+    """
+    Compute the block-averaged weight matrix for visualisation.
+
+    Divides the (num_pre, num_post) weight matrix into a (y_dim, x_dim) grid
+    of equal-sized blocks and returns the mean weight within each block.
+
+    Parameters
+    ----------
+    w : np.ndarray, shape (num_pre, num_post)
+        Synaptic weight matrix.
+    x_dim : int
+        Number of column blocks (typically num_state_total).
+    y_dim : int
+        Number of row blocks (typically num_state_total).
+
+    Returns
+    -------
+    mean_wmx : np.ndarray, shape (y_dim, x_dim)
+        Block-averaged weight matrix.
+    """
     pop_size_x = int(w.shape[1] / x_dim)
     pop_size_y = int(w.shape[0] / y_dim)
 
@@ -29,7 +57,26 @@ def average_weight(w, x_dim, y_dim):
     return mean_wmx
 
 def plot_heatmap(data, fig, ax, title, cmap='inferno', vmin=None, vmax=None):
+    """
+    Plot a 2-D array as a colour-mapped heatmap with a colourbar.
 
+    Parameters
+    ----------
+    data : np.ndarray, shape (rows, cols)
+        Data to visualise.
+    fig : matplotlib.figure.Figure
+    ax : matplotlib.axes.Axes
+    title : str
+        Axes title.
+    cmap : str
+        Matplotlib colourmap name.
+    vmin, vmax : float or None
+        Colourbar range; auto-scaled if None.
+
+    Returns
+    -------
+    fig, ax
+    """
     x = np.arange(data.shape[1] + 1)
     y = np.arange(data.shape[0] + 1)
     
@@ -40,7 +87,26 @@ def plot_heatmap(data, fig, ax, title, cmap='inferno', vmin=None, vmax=None):
     return fig, ax
 
 def extract_aligned_activity(reference_array, arr_peak_idx, target_window):
-    
+    """
+    Extract activity traces for each neuron aligned to its peak position.
+
+    The reference array is tiled three times vertically to avoid edge-indexing
+    errors for neurons with peaks near the beginning or end of the track.
+
+    Parameters
+    ----------
+    reference_array : np.ndarray, shape (num_positions, num_neurons)
+        Spatial activity map (e.g., CA1 activity as a function of position).
+    arr_peak_idx : np.ndarray, shape (num_neurons,)
+        Position index of each neuron's peak activity.
+    target_window : int
+        Half-width of the extraction window (total width = 2 * target_window + 1).
+
+    Returns
+    -------
+    target_act : np.ndarray, shape (num_neurons, 2 * target_window + 1)
+        Activity of each neuron in a window centred on its peak.
+    """
     # Extend activity to avoid edge slicing
     extended_act = np.vstack([reference_array] * 3)
     # print(extended_act.shape)
@@ -53,13 +119,47 @@ def extract_aligned_activity(reference_array, arr_peak_idx, target_window):
     
     return target_act
 
-def plot_shaded(xx,mean_val,error_val,ax,color='black'):
+def plot_shaded(xx, mean_val, error_val, ax, color='black'):
+    """
+    Plot a line with a shaded error band.
+
+    Parameters
+    ----------
+    xx : array-like
+        X-axis values.
+    mean_val : array-like
+        Mean values for the line.
+    error_val : array-like
+        Error magnitude for the shaded band (mean ± error).
+    ax : matplotlib.axes.Axes
+    color : str
+        Line and band colour.
+
+    Returns
+    -------
+    ax
+    """
     ax.fill_between(xx, mean_val-error_val, mean_val+error_val, alpha=0.2, color=color, linewidth=0)
     ax.plot(xx, mean_val, color=color)
 
     return ax
 
 def plot_box(data1, data2, ax, colors=['lightblue', 'lightgreen']):
+    """
+    Draw side-by-side box plots for two data groups without outlier markers.
+
+    Parameters
+    ----------
+    data1, data2 : array-like
+        Data for the two groups.
+    ax : matplotlib.axes.Axes
+    colors : list of str
+        Fill colours for the two boxes.
+
+    Returns
+    -------
+    ax
+    """
     bp = ax.boxplot([data1, data2], positions=[1, 2], patch_artist=True, showfliers=False)
 
     for patch, color in zip(bp['boxes'], colors):
@@ -70,6 +170,20 @@ def plot_box(data1, data2, ax, colors=['lightblue', 'lightgreen']):
     return ax
 
 def create_annot_nonzero(data):
+    """
+    Build a string annotation array for a heatmap, showing only non-zero values.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Numeric data array.
+
+    Returns
+    -------
+    annot_data : np.ndarray of str, same shape as data
+        Each cell contains a formatted string ("%.1f") for non-zero entries
+        and an empty string for zero entries.
+    """
     annot_data = np.full(data.shape, '', dtype=object) # Initialize with empty strings
     for i in range(data.shape[0]):
         for j in range(data.shape[1]):
@@ -79,7 +193,37 @@ def create_annot_nonzero(data):
     return annot_data
 
 def plot_spike(spike_times, spiking_neurons, target_idx, cue_idx=np.array([]), zoom_from=0, zoom_to=None, color_='blue', dotsize=1.5, ax=None):
-    
+    """
+    Draw a raster plot for a subset of neurons, optionally highlighting cue cells.
+
+    Neurons are reordered so that target_idx[0] appears at position 0 on the
+    y-axis, enabling custom sorting (e.g., by place field position).
+
+    Parameters
+    ----------
+    spike_times : np.ndarray
+        All spike times [ms].
+    spiking_neurons : np.ndarray of int
+        Neuron index for each spike.
+    target_idx : np.ndarray of int
+        Ordered neuron indices to include in the plot (defines y-axis order).
+    cue_idx : np.ndarray of int
+        Subset of target_idx to plot in red (cue/non-place cells).
+    zoom_from : float
+        Start of the time window to display [ms].
+    zoom_to : float or None
+        End of the time window [ms]; defaults to last spike time + 10 ms.
+    color_ : str
+        Colour for non-cue spike dots.
+    dotsize : float
+        Marker size.
+    ax : matplotlib.axes.Axes or None
+        Target axes; must be provided.
+
+    Returns
+    -------
+    ax
+    """
     num_neuron = len(target_idx); order_arr = np.zeros(target_idx.max()+1)
     idx = np.where((spike_times > zoom_from)&(spike_times < zoom_to)&np.isin(spiking_neurons, target_idx))
     spike_times = spike_times[idx]; spiking_neurons = spiking_neurons[idx]
