@@ -74,8 +74,8 @@ theta_PC = -24.4255910105977 * mV
 tref_PC = 5.96326930945599 * ms
 delta_T_PC = 4.2340696257631 * mV
 spike_th_PC = theta_PC + 5 * delta_T_PC
-a_PC = -0.01 * nS#5 * nS#-0.274347065652738 * nS#
-b_PC = 500 * pA#206.841448096415 * pA#270.841448096415 * pA#
+a_PC = -0.01 * nS
+b_PC = 500 * pA
 tau_w_PC = 250 * ms#84.9358017225512 * ms
 
 # parameters for BCs (re-optimized by Szabolcs)
@@ -101,6 +101,23 @@ dg_ampaMF/dt = (x_ampaMF - g_ampaMF) / rise_PC_MF : 1
 dx_ampaMF/dt = -x_ampaMF / decay_PC_MF : 1
 dg_gaba/dt = (x_gaba - g_gaba) / rise_PC_I : 1
 dx_gaba/dt = -x_gaba/decay_PC_I : 1
+"""
+
+# [NEW] — per-neuron (rather than population-shared) adaptation variant of eqs_PC.
+# a_adapt/b_adapt are state variables instead of the shared constants a_PC/b_PC,
+# so a subset of neurons can be given elevated adaptation ("fatigue") while the
+# rest keep the default. See run_offline.ca3_offline_fatigued.
+eqs_PC_het = """
+dvm/dt = (-g_leak_PC*(vm-Vrest_PC) + g_leak_PC*delta_T_PC*exp((vm- theta_PC)/delta_T_PC) - w - ((g_ampa+g_ampaMF)*z*(vm-Erev_E) + g_gaba*z*(vm-Erev_I)))/Cm_PC : volt (unless refractory)
+dw/dt = (a_adapt*(vm-Vrest_PC) - w) / tau_w_PC : amp
+dg_ampa/dt = (x_ampa - g_ampa) / rise_PC_E : 1
+dx_ampa/dt = -x_ampa / decay_PC_E : 1
+dg_ampaMF/dt = (x_ampaMF - g_ampaMF) / rise_PC_MF : 1
+dx_ampaMF/dt = -x_ampaMF / decay_PC_MF : 1
+dg_gaba/dt = (x_gaba - g_gaba) / rise_PC_I : 1
+dx_gaba/dt = -x_gaba/decay_PC_I : 1
+a_adapt : siemens
+b_adapt : amp
 """
 
 eqs_BC = """

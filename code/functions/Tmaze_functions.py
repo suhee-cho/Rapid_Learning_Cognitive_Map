@@ -185,8 +185,8 @@ def analyse_replay(spike_times, spiking_neurons, rate, len_sim=rest_time, ordere
     """
     if len(spike_times) > 0:  # check if there is any activity
 
-        slice_idx = slice_high_activity(rate, th=1.25, min_len=130, len_sim=len_sim)
-
+        slice_idx = slice_high_activity(rate, th=1.25, min_len=180, len_sim=len_sim)
+        print(f"Detected high activity slices: {len(slice_idx)}")
         if slice_idx:
             tuning_curves = load_tuning_curves(spatial_points)
 
@@ -195,9 +195,6 @@ def analyse_replay(spike_times, spiking_neurons, rate, len_sim=rest_time, ordere
                 neuron_idx_concat = np.concatenate([ordered_neuron_idx,scrambled])
                 tuning_curves = {ii: tuning_curves[key] for ii,key in enumerate(neuron_idx_concat)}
                 spiking_neurons = np.array([np.where(neuron_idx_concat==neuron)[0][0] for neuron in spiking_neurons])
-                
-                # tuning_curves = {ii: tuning_curves[key] for ii,key in enumerate(ordered_neuron_idx)}
-                # spiking_neurons = np.array([np.where(ordered_neuron_idx==neuron)[0][0] for neuron in spiking_neurons])
 
             sign_replays, replay_results = [], {}
             for bounds in slice_idx:  # iterate through sustained high activity periods
@@ -232,14 +229,16 @@ def analyse_replay(spike_times, spiking_neurons, rate, len_sim=rest_time, ordere
 # [NEW] — T-maze-specific function.
 # Classifies each detected replay event into one of the canonical trajectory types
 # defined in replay_trajectory (Tmaze_variables.py).
-def analyse_replay_type(spk_time, spk_neurons, rate, replay_trajectory=replay_trajectory, save_path=None, verbose=True):
+def analyse_replay_type(spk_time, spk_neurons, rate, target_trajectory=replay_trajectory,
+                        coverage_thr=0.75, save_path=None, verbose=True):
     """
     Classify detected replay events into canonical T-maze trajectory types.
 
-    For each trajectory type defined in `replay_trajectory` (Tmaze_variables.py),
-    the function filters spikes to the neurons whose place fields lie along that
-    trajectory, runs `analyse_replay`, and checks whether the decoded path
-    follows the canonical sequence (≥ 75% of decoded positions on the path).
+    For each trajectory in `target_trajectory`, isolates the CA3 neurons whose
+    place fields lie along that path (neurons may overlap across trajectory types),
+    recomputes the population rate from those neurons, runs `analyse_replay`, and
+    accepts events where ≥ coverage_thr of decoded positions fall within the
+    trajectory's spatial range.
 
     Parameters
     ----------
@@ -248,41 +247,92 @@ def analyse_replay_type(spk_time, spk_neurons, rate, replay_trajectory=replay_tr
     spk_neurons : np.ndarray of int
         Neuron index for each spike.
     rate : np.ndarray
-        CA3 population rate time series.
-    replay_trajectory : list of lists
-        Each entry is a list of state IDs defining one canonical replay path
-        (from Tmaze_variables.replay_trajectory).
+        Full CA3 population rate time series; used only for its length and time span
+        to set the binning resolution for the per-trajectory rate.
+    target_trajectory : list of lists  (default: replay_trajectory)
+        Each entry is a list of state IDs defining one full canonical replay path.
+        Defaults to the three types in Tmaze_variables.replay_trajectory:
+          [0] shortcut        [3,4,5,6,7,8,9]
+          [1] left from stem  [0,1,2,6,5,4,3]
+          [2] right from stem [0,1,2,6,7,8,9]
+    coverage_thr : float
+        Minimum fraction of decoded positions that must fall within the
+        trajectory's spatial units for an event to be accepted (default 0.75).
     save_path : str or None
-        Directory path; if provided, pickles detected replay events per type.
+        Directory; if given, pickles detected events as replay_type_N.pkl per type.
     verbose : bool
-        Print count of detected events per type.
+        Print event counts per trajectory type.
+
+    Returns
+    -------
+    detected_per_type : list of dicts, length = len(target_trajectory)
+        Each dict maps (lb, ub) → fitted_path (np.ndarray).
     """
+    import pickle
+
     CA3_PF = load_PF_starts()
-    CA3_PC_ID_list = generate_place_cell_ID_list(np.array(list(CA3_PF.keys()),dtype=int), np.array(list(CA3_PF.values())))
+    CA3_PC_ID_list = generate_place_cell_ID_list(
+        np.array(list(CA3_PF.keys()), dtype=int),
+        np.array(list(CA3_PF.values()))
+    )
+    
+    # Rate binning parameters — match the original rate array's time resolution
+    len_rate  = len(rate)
+    bin_dur_s = (rest_time / len_rate) / 1000.0          # duration of each bin [s]
+    rate_bins = np.linspace(0, rest_time, len_rate + 1)  # bin edges [ms]
 
-    for rep_type, rep_traj in enumerate(replay_trajectory):
-        detected_replay = {}
-        target_idx = reorder_neuron_idx(CA3_PC_ID_list,CA3_PF,rep_traj)
-        idx = np.where(np.isin(spk_neurons, target_idx))[0]
+    detected_per_type = []
+    for rep_type, targ_traj in enumerate(target_trajectory):
+        detected = {}
 
-        _, replay_results = analyse_replay(spk_time[idx], spk_neurons[idx], rate, verbose=False)
-        for tt in replay_results.keys():
-            if replay_results[tt]['significance'] == 1:
-                
-                path = replay_results[(tt[0], tt[1])]['fitted_path']
-                path[path<0] = unit_gran*num_state_total+path[path<0]
-                target_path_units = []
-                for ss in rep_traj: target_path_units += list(np.arange(ss*4,(ss+1)*4))
-                target_path_units = np.array(target_path_units)
-                path[np.where(~np.isin(np.round(path),target_path_units))[0]]=-10
-                if len(np.where(path>=0)[0])/len(path) > 0.75:
-                    detected_replay[tt] = path
-                else: continue
-        if verbose: print("Type %d replay: %d events detected!"%(rep_type,len(list(detected_replay.keys()))))
+        # Isolate neurons whose place fields lie along this trajectory
+        target_idx = reorder_neuron_idx(CA3_PC_ID_list, CA3_PF, targ_traj)
+        mask = np.isin(spk_neurons, target_idx)
+
+        n_target = int(mask.sum())
+        if n_target == 0:
+            detected_per_type.append(detected)
+            if verbose:
+                print(f"Trajectory type {rep_type}: 0 spikes from trajectory neurons")
+            continue
+
+        # Recompute population rate from target neurons only [Hz]
+        counts, _ = np.histogram(spk_time[mask], bins=rate_bins)
+        rate_target = counts / (n_target * bin_dur_s)
+        # print(len(rate))
+        # print(len(rate_target))
+        # print(rate_target.max())
+        result = analyse_replay(spk_time[mask], spk_neurons[mask], rate_target*20, verbose=False)
+        if not isinstance(result[1], dict):
+            detected_per_type.append(detected)
+            continue
+        _, replay_results = result[0], result[1]
+
+        # Spatial units covered by this trajectory
+        target_units = np.array(
+            [u for ss in targ_traj for u in range(ss * unit_gran, (ss + 1) * unit_gran)]
+        )
+
+        for tt, res in replay_results.items():
+            if res['significance'] != 1:
+                continue
+            path = res['fitted_path'].copy()
+            # Mark positions outside this trajectory's spatial range as invalid
+            invalid = ~np.isin(np.round(path).astype(int), target_units)
+            path[invalid] = -10
+            if (path >= 0).sum() / len(path) >= coverage_thr:
+                detected[tt] = path
+
+        if verbose:
+            print(f"Trajectory type {rep_type}: {len(detected)} replay events detected")
+
         if save_path is not None:
-            import pickle
-            with open(os.path.join(save_path,"replay_type_%d.pkl"%rep_type), 'wb') as fp:
-                pickle.dump(detected_replay, fp)
+            with open(os.path.join(save_path, f"replay_type_{rep_type}.pkl"), 'wb') as fp:
+                pickle.dump(detected, fp)
+
+        detected_per_type.append(detected)
+
+    return detected_per_type
 
 
 # def replay_Tmaze(spike_times, spiking_neurons, slice_idx, spatial_points=sample_spatial_points(4), ordered_neuron_idx, activity_arr, pklf_name, N, delta_t=10, t_incr=10):
@@ -443,6 +493,7 @@ def generate_place_field(initial_seed, num_neurons):
 
 # [NEW] — visualises per-state scalar data on the T-maze grid using imshow.
 def plot_Tmaze_heat(data,ax,colormap='RdBu_r',vmax=1.5):
+    from matplotlib.colors import TwoSlopeNorm
     norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
     Tmaze_grid = np.array([state_position[ss]-[0.5,0.5] for ss in range(num_state_total)],dtype=int)
     data_arr = np.zeros((num_state_row+1,num_state_col))
@@ -481,6 +532,45 @@ def generate_place_cell_ID_list(place_cell_ID, phi_mid_array):
         place_cell_ID_list.append(place_cell_ID[indices])
         del indices
     return place_cell_ID_list
+
+# [NEW] — selectively potentiates recurrent CA3-CA3 synapses within a set of
+# states (see run_offline.simulate_potentiated_replay / Supple_replay_Carey.ipynb).
+def build_potentiated_weight_matrix(W_raw, PF_dict, potentiated_states, factor):
+    """
+    Scale recurrent CA3-CA3 synapses whose pre- AND post-synaptic neurons both
+    have place fields in `potentiated_states` by `factor`; all other (non-zero)
+    synapses are left unchanged.
+
+    Parameters
+    ----------
+    W_raw : np.ndarray, shape (num_CA3, num_CA3)
+        Learned recurrent weight matrix.
+    PF_dict : dict {neuron_id: [row, col]}
+        CA3 place field peak positions.
+    potentiated_states : list of int
+        0-indexed T-maze states whose mutual recurrent synapses are potentiated.
+    factor : float
+        Multiplicative scale applied to the selected synapses (1.15 = +15 %).
+
+    Returns
+    -------
+    W_pot : np.ndarray
+        Copy of `W_raw` with the selected synapses scaled.
+    potentiated_mask : np.ndarray of bool, shape (num_CA3, num_CA3)
+        True where a weight was scaled.
+    n_potentiated : int
+        Number of potentiated synapses.
+    """
+    place_cell_ID_list = generate_place_cell_ID_list(np.array(list(PF_dict.keys()), dtype=int),
+                                                       np.array(list(PF_dict.values())))
+    in_pot = np.zeros(W_raw.shape[0], dtype=bool)
+    for s in potentiated_states:
+        in_pot[place_cell_ID_list[s]] = True
+
+    potentiated_mask = np.outer(in_pot, in_pot) & (W_raw > 0)
+    W_pot = W_raw.copy()
+    W_pot[potentiated_mask] *= factor
+    return W_pot, potentiated_mask, int(potentiated_mask.sum())
 
 def presence_update(current_unit_ID, lap, verbose=False):
     """

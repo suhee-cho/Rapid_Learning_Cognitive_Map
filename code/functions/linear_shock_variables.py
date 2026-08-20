@@ -44,10 +44,11 @@ init_cue_exp_num = 1
 single_lap = np.ones(num_state_total, dtype=int)
 loop_num = 4
 tot_lap = loop_num
+detailed_laps = [3]
 
-feature_unit_ID = [np.array([-1]), np.array([num_state_col-1])] + [np.array([ii]) for ii in range(num_state_total)]
+feature_unit_ID = [[np.array([-1]), np.array([num_state_col-1])] + [np.array([ii]) for ii in range(num_state_total)]]
 
-cue_lap = np.arange(exploration_num+1, exploration_num+1+init_cue_exp_num)
+cue_lap = [np.arange(exploration_num+1, exploration_num+1+init_cue_exp_num)]
 exploration_actions = np.tile(single_lap,(loop_num,1))
 
 start = np.array([0, 0])
@@ -56,7 +57,7 @@ start = np.array([0, 0])
 feature_speed = np.concatenate((np.array([0.5,2.0]),np.ones((num_state_total))),axis=0) # [unit/ms]
 
 MI_vector = np.concatenate((np.array([0,10]),np.ones((num_state_total))),axis=0) # MI for the cues.
-value_vector = np.concatenate((np.array([10,-50]),np.zeros((num_state_total))),axis=0) # Valence for the cues: [neutral, positive, negative]
+value_vector = np.concatenate((np.array([1,-5]),np.zeros((num_state_total))),axis=0) # Valence for the cues: [neutral, positive, negative]
 num_features = len(MI_vector) # Number of cues
 
 # Offline learning variables

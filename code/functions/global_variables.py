@@ -92,7 +92,7 @@ sec = 1000              # Milliseconds per second (unit conversion constant)
 step_time_length = 1*sec  # Nominal duration for traversing one maze unit [ms]
 softmax_scaling = 0.7   # Softmax temperature scaling (used in compute_transition_matrix)
 softmax_shift = 2
-cue_weight_LR = 1e-2*(1/max_input_FR)*(1/3200)  # Learning rate for CA1→feature delta rule
+cue_weight_LR = 1e-3*(1/max_input_FR)*(1/3200)  # Learning rate for CA1→feature delta rule
 
 v_mice = 1.0/sec  # Baseline animal running speed [maze units / ms]
 

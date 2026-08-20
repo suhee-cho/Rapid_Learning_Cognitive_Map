@@ -27,6 +27,110 @@ base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2]
 data_path = os.path.join(base_path,"results/linear_shock")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
+def analyse_replay_type(spk_time, spk_neurons, rate, target_trajectory=[[3,4,5,6],[3,2,1,0]],
+                        coverage_thr=0.75, save_path=False, verbose=True):
+    """
+    Classify detected replay events into canonical T-maze trajectory types.
+
+    For each trajectory in `target_trajectory`, isolates the CA3 neurons whose
+    place fields lie along that path (neurons may overlap across trajectory types),
+    recomputes the population rate from those neurons, runs `analyse_replay`, and
+    accepts events where ≥ coverage_thr of decoded positions fall within the
+    trajectory's spatial range.
+
+    Parameters
+    ----------
+    spk_time : np.ndarray
+        Spike times [ms] from the offline CA3 simulation.
+    spk_neurons : np.ndarray of int
+        Neuron index for each spike.
+    rate : np.ndarray
+        Full CA3 population rate time series; used only for its length and time span
+        to set the binning resolution for the per-trajectory rate.
+    target_trajectory : list of lists  (default: replay_trajectory)
+        Each entry is a list of state IDs defining one full canonical replay path.
+        Defaults to the three types in Tmaze_variables.replay_trajectory:
+          [0] forward        [3,4,5,6]
+          [1] backward  [0,1,2,3]
+    coverage_thr : float
+        Minimum fraction of decoded positions that must fall within the
+        trajectory's spatial units for an event to be accepted (default 0.75).
+    save_path : str or None
+        Directory; if given, pickles detected events as replay_type_N.pkl per type.
+    verbose : bool
+        Print event counts per trajectory type.
+
+    Returns
+    -------
+    detected_per_type : list of dicts, length = len(target_trajectory)
+        Each dict maps (lb, ub) → fitted_path (np.ndarray).
+    """
+    import pickle
+
+    CA3_PF = load_PF_starts()
+    CA3_PC_ID_list = generate_place_cell_ID_list(
+        np.array(list(CA3_PF.keys()), dtype=int),
+        np.array(list(CA3_PF.values()))
+    )
+    
+    # Rate binning parameters — match the original rate array's time resolution
+    len_rate  = len(rate)
+    bin_dur_s = (rest_time / len_rate) / 1000.0          # duration of each bin [s]
+    rate_bins = np.linspace(0, rest_time, len_rate + 1)  # bin edges [ms]
+
+    detected_per_type = []
+    for rep_type, targ_traj in enumerate(target_trajectory):
+        detected = {}
+
+        # Isolate neurons whose place fields lie along this trajectory
+        target_idx = reorder_neuron_idx(CA3_PC_ID_list, CA3_PF, targ_traj)
+        mask = np.isin(spk_neurons, target_idx)
+
+        n_target = int(mask.sum())
+        if n_target == 0:
+            detected_per_type.append(detected)
+            if verbose:
+                print(f"Trajectory type {rep_type}: 0 spikes from trajectory neurons")
+            continue
+
+        # Recompute population rate from target neurons only [Hz]
+        counts, _ = np.histogram(spk_time[mask], bins=rate_bins)
+        rate_target = counts / (n_target * bin_dur_s)
+        # print(len(rate))
+        # print(len(rate_target))
+        # print(rate_target.max())
+        result = analyse_replay(spk_time[mask], spk_neurons[mask], rate_target*20, verbose=False)
+        if not isinstance(result[1], dict):
+            detected_per_type.append(detected)
+            continue
+        _, replay_results = result[0], result[1]
+
+        # Spatial units covered by this trajectory
+        target_units = np.array(
+            [u for ss in targ_traj for u in range(ss * unit_gran, (ss + 1) * unit_gran)]
+        )
+
+        for tt, res in replay_results.items():
+            if res['significance'] != 1:
+                continue
+            path = res['fitted_path'].copy()
+            # Mark positions outside this trajectory's spatial range as invalid
+            invalid = ~np.isin(np.round(path).astype(int), target_units)
+            path[invalid] = -10
+            if (path >= 0).sum() / len(path) >= coverage_thr:
+                detected[tt] = path
+
+        if verbose:
+            print(f"Trajectory type {rep_type}: {len(detected)} replay events detected")
+
+        if save_path:
+            with open(os.path.join(save_path, f"replay_type_{rep_type}.pkl"), 'wb') as fp:
+                pickle.dump(detected, fp)
+
+        detected_per_type.append(detected)
+
+    return detected_per_type
+
 def compute_transition_matrix(num_states, value_states, possible_actions, end_state=None, softmax_coeff=1):
     """
     Build a softmax-weighted Markov transition matrix from state value estimates.
@@ -77,6 +181,28 @@ def compute_transition_matrix(num_states, value_states, possible_actions, end_st
             value_matrix[state_ID,next_state_ID] = values_action
 
     return transition_matrix, value_matrix
+
+def sample_spatial_points(unit_gran):
+    """
+    Generate a uniform grid of 2-D spatial sample points along the linear track.
+
+    For the linear reward track (row = 0), points are sampled at `unit_gran`
+    sub-unit intervals along the column axis.
+
+    Parameters
+    ----------
+    unit_gran : int
+        Number of sample points per maze unit.
+
+    Returns
+    -------
+    spatial_points : np.ndarray, shape (unit_gran * num_state_total, 2)
+        Array of (row, col) coordinates covering the entire track.
+    """
+    col = np.linspace(0,num_state_total-1.0/unit_gran,unit_gran*num_state_total).reshape(-1, 1)
+    row = np.zeros((len(col),1))
+    spatial_points = np.hstack([row, col])
+    return spatial_points
 
 def load_tuning_curves(spatial_points):
     """
@@ -285,8 +411,8 @@ def presence_update(current_unit_ID, lap, verbose=False):
     f_presence = np.zeros((num_features), dtype=float)
     f_presence[2+current_unit_ID] = 1
 
+    feature_case = -1
     for cc in range(len(cue_lap)):
-        feature_case = -1
         if lap in cue_lap[cc]: feature_case = cc; break
 
     if feature_case>=0:

@@ -30,9 +30,11 @@ Sections
 11. Misc. utilities                          (REVISED / COPIED)
 12. Oscillation detection                    (REVISED / COPIED)
 13. Bayesian replay decoding                 (REVISED)
+14. Checkpointed multi-lap continuation      (NEW)
 """
 
 import os, pickle
+import random as pyrandom
 from global_variables import *
 from copy import deepcopy
 
@@ -1085,118 +1087,6 @@ def generate_cue_spikes():
 
     return spike_times, spiking_neurons
 
-
-# def calc_spiketrain_ISIs():
-#     """Calculates inter spike intervals within the generated spike trains (separately for place cells, non-place cells)"""
-
-#     # just to get place cell idx
-#     pklf_name = os.path.join(base_path, "files", "PFstarts_0.5_linear.pkl")
-#     with open(pklf_name, "rb") as f:
-#         PFs = pickle.load(f, encoding="latin1")
-
-#     npzf_name = os.path.join(base_path, "files", "spike_trains_0.5_linear.npz")
-#     npz_f = np.load(npzf_name)
-#     spike_trains = npz_f["spike_trains"]
-
-#     place_cell_ISIs = []
-#     nplace_cell_ISIs = []
-#     for i in range(num_CA3_neurons):
-#         if i in PFs:
-#             place_cell_ISIs.extend(np.diff(spike_trains[i]).tolist())
-#         else:
-#             nplace_cell_ISIs.extend(np.diff(spike_trains[i]).tolist())
-
-#     results = {"PCs":np.asarray(place_cell_ISIs), "num_CA3_neurons":np.asarray(nplace_cell_ISIs)}
-#     pklf_name = os.path.join(base_path, "files", "spiketrain_ISIs.pkl")
-#     with open(pklf_name, "wb") as f:
-#         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-# def calc_single_cell_rates(seed):
-#     """Calculates single cell firing rates for cells (separately for place cells, non-place cells and BCs)"""
-
-#     # just to get place cell idx
-#     pklf_name = os.path.join(base_path, "files", "PFstarts_0.5_linear.pkl")
-#     with open(pklf_name, "rb") as f:
-#         PFs = pickle.load(f, encoding="latin1")
-
-#     pklf_name = os.path.join(base_path, "files", "sim_vars_PC_%s.pkl" % seed)
-#     spike_times, spiking_neurons, rate = load_spikes(pklf_name)
-
-#     place_cell_rates = []
-#     nplace_cell_rates = []
-#     for i in range(num_CA3_neurons):
-#         spikes = spike_times[spiking_neurons == i]
-#         if i in PFs:
-#             place_cell_rates.append(len(spikes)/(len_sim/1000.))
-#         else:
-#             nplace_cell_rates.append(len(spikes)/(len_sim/1000.))
-
-#     pklf_name = os.path.join(base_path, "files", "sim_vars_BC_%s.pkl" % seed)
-#     spike_times, spiking_neurons, _ = load_spikes(pklf_name)
-
-#     BC_rates = []
-#     for i in range(num_IN_neurons):
-#         spikes = spike_times[spiking_neurons == i]
-#         BC_rates.append(len(spikes)/(len_sim/1000.))
-
-#     results = {"PCs": np.asarray(place_cell_rates), "num_CA3_neurons": np.asarray(nplace_cell_rates), "BCs": np.asarray(BC_rates)}
-#     pklf_name = os.path.join(base_path, "files", "single_cell_rates_%s.pkl" % seed)
-#     with open(pklf_name, "wb") as f:
-#         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-# def calc_ISIs(seed):
-#     """Calculates inter spike intervals for cells (separately for place cells, non-place cells and BCs)"""
-
-#     # just to get place cell idx
-#     pklf_name = os.path.join(base_path, "files", "PFstarts_0.5_linear.pkl")
-#     with open(pklf_name, "rb") as f:
-#         PFs = pickle.load(f, encoding="latin1")
-
-#     pklf_name = os.path.join(base_path, "files", "sim_vars_PC_%s.pkl"%seed)
-#     spike_times, spiking_neurons, _ = load_spikes(pklf_name)
-
-#     place_cell_ISIs = []
-#     nplace_cell_ISIs = []
-#     for i in range(num_CA3_neurons):
-#         idx = np.where(spiking_neurons == i)[0]
-#         spikes = spike_times[idx]
-#         if i in PFs:
-#             place_cell_ISIs.extend(np.diff(spikes).tolist())
-#         else:
-#             nplace_cell_ISIs.extend(np.diff(spikes).tolist())
-
-#     pklf_name = os.path.join(base_path, "files", "sim_vars_BC_%s.pkl"%seed)
-#     spike_times, spiking_neurons, _ = load_spikes(pklf_name)
-
-#     BC_ISIs = []
-#     for i in range(num_IN_neurons):
-#         idx = np.where(spiking_neurons == i)[0]
-#         spikes = spike_times[idx]
-#         BC_ISIs.extend(np.diff(spikes).tolist())
-
-#     results = {"PCs":np.asarray(place_cell_ISIs), "num_CA3_neurons":np.asarray(nplace_cell_ISIs), "BCs":np.asarray(BC_ISIs)}
-#     pklf_name = os.path.join(base_path, "files", "ISIs_%s.pkl"%seed)
-#     with open(pklf_name, "wb") as f:
-#         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-
-# def calc_LFP_TFR(seed):
-#     """Calculates TFR of the full LFP (not sliced, not downsampled)"""
-
-#     pklf_name = os.path.join(base_path, "files", "LFP_%s.pkl"%seed)
-#     t, LFP = load_LFP(pklf_name)
-#     fs = 10000.
-
-#     scales = np.concatenate((np.linspace(25, 80, 250), np.linspace(80, 300, 250)[1:]))  # 27-325 Hz  pywt.scale2frequency("morl", scale) / (1/fs)
-#     coefs, freqs = pywt.cwt(LFP, scales, "morl", 1/fs)
-
-#     results = {"coefs": coefs, "freqs": freqs}
-#     pklf_name = os.path.join(base_path, "files", "LFP_TFR_%s.pkl" % seed)
-#     with open(pklf_name, "wb") as f:
-#         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
-
 def sigmoid(x, a, b):
     x = np.asarray(x)
     return 1 / (1 + np.exp(-b * (x - a)))
@@ -1260,11 +1150,12 @@ def slice_high_activity(rate, th, min_len, len_sim, bin_=10):
     return slice_idx
 
 # [NEW] — simulates animal behaviour as a Markov chain given a transition matrix P.
-def behavior_markov(P, total_time=600, start_state=0, end_state=[]):
-    trajectory = np.zeros(total_time, dtype=int)
+def behavior_markov(P, total_time=600, start_state=0, end_state=[], seed=12345):
+    rng = np.random.default_rng(seed)  # seed once; reseeding every step can correlate draws
+    trajectory = 100*np.ones(total_time, dtype=int)
     trajectory[0] = start_state
     for t in range(1, total_time):
-        trajectory[t] = np.random.choice(np.arange(P.shape[0]), p=P[trajectory[t-1],:])
+        trajectory[t] = rng.choice(np.arange(P.shape[0]), p=P[trajectory[t-1],:])
         if trajectory[t] in end_state:
             goal_time = t
             goal_state = trajectory[t]
@@ -1650,8 +1541,6 @@ def extract_binspikecount(lb, ub, delta_t, t_incr, spike_times, spiking_neurons,
 def calc_posterior(bin_spike_counts, tuning_curves, delta_t):
     """
     Calculates posterior distribution of decoded place Pr(x|spikes) based on Davison et al. 2009
-    Pr(spikes|x) = \prod_{i=1}^N \frac{(\Delta t*tau_i(x))^n_i}{n_i!} e^{-\Delta t*tau_i(x)} (* uniform prior...)
-    (It actually implements it via log(likelihoods) for numerical stability)
     Assumptions: independent neurons; firing rates modeled with Poisson processes
     Vectorized implementation using only the spiking neurons in each bin
     (plus taking only the highest fraction before summing...)
@@ -1706,7 +1595,6 @@ def _line(x, a, b):
 def _evaluate_fit(X_posterior, y, band_size=2):
     """
     Calculates the goodness of fit based on Davison et al. 2009 (line fitting in a probability matrix)
-    R(v, rho) = \frac{1}{n} \sum_{k=1}^n-1 Pr(|pos - (rho + v*k*\Delta t)| < d)
     Masking matrix is based on Olafsdottir et al. 2016's MATLAB implementation
     :param X_posterior: posterior matrix (see `get_posterior()`)
     :param y: candidate fitted line
@@ -1798,4 +1686,193 @@ def test_significance(bin_spike_counts, tuning_curves, delta_t, R, N):
     pool.terminate()
     significance = 1 if R > np.percentile(Rs, 95) else np.nan
     return significance, sorted(Rs)
+
+# =============================================================================
+# 14. Checkpointed multi-lap continuation  [NEW]
+#
+# Supports factorial (speed, MI) control simulations: a single lap is resumed
+# from a saved online-learning checkpoint and re-run under different
+# salient-cue speed/motivational-importance scalings. Mirrors the per-lap
+# loop body in run_online.py, so the underlying BTSP/prediction-error
+# dynamics are identical to the original online simulations.
+# =============================================================================
+
+CHECKPOINT_FIELDS = ["w_CA3_CA3", "w_CA3_CA1", "w_CA1_feat", "ET_CA3", "PT_CA3",
+                     "plateau_flag_CA3", "plateau_refractory_CA3", "CA3_FR",
+                     "PT_CA1", "plateau_flag_CA1", "plateau_refractory_CA1", "CA1_FR"]
+
+
+def _task_imports(mode):
+    """Task-specific imports shared by find_feature_step/run_lap_steps (mode: 0=linear_reward, 2=linear_shock)."""
+    if mode == 0:
+        from linear_reward_variables import actions, num_CA3_neurons, num_CA1_neurons
+        from linear_reward_variables import exploration_actions, start, num_features
+        from linear_reward_functions import retreive_ID_from_position, presence_update
+        from linear_reward_functions import generate_spike_byPlaceAndInput
+    elif mode == 2:
+        from linear_shock_variables import actions, num_CA3_neurons, num_CA1_neurons
+        from linear_shock_variables import exploration_actions, start, num_features
+        from linear_shock_functions import retreive_ID_from_position, presence_update
+        from linear_shock_functions import generate_spike_byPlaceAndInput
+    else:
+        raise ValueError("mode must be 0 (linear_reward) or 2 (linear_shock)")
+    return (actions, num_CA3_neurons, num_CA1_neurons, exploration_actions, start,
+            num_features, retreive_ID_from_position, presence_update, generate_spike_byPlaceAndInput)
+
+
+def find_feature_step(mode, lap, feat_idx):
+    """
+    Return the (0-indexed) step within `lap` at which feature `feat_idx`
+    first becomes present, using the task's deterministic action trajectory
+    (no physiology needs to be simulated to know this).
+    """
+    (actions, _, _, exploration_actions, start, _,
+     retreive_ID_from_position, presence_update, _) = _task_imports(mode)
+
+    current_position = start
+    for step in range(exploration_actions.shape[1]):
+        action_ID = exploration_actions[lap-1, step]
+        current_unit_ID, _ = retreive_ID_from_position(current_position + actions[action_ID]/2)
+        f_presence = presence_update(current_unit_ID, lap)
+        if f_presence[feat_idx] == 1:
+            return step
+        current_position = current_position + actions[action_ID]
+    raise ValueError("Feature %d never appears during lap %d" % (feat_idx, lap))
+
+
+def run_lap_steps(mode, lap, seed, current_position, state, connectivity_CA3_CA3, connectivity_CA3_CA1,
+                   CA3_place_fields, MI_vector, feature_speed, start_step, stop_step,
+                   error_list, PS_list, step_error, verbose=False):
+    """
+    Run steps [start_step, stop_step) of `lap`, continuing from `state`/`seed`/
+    `current_position` (all identical to what the corresponding point in a
+    from-scratch run would have). Mutates/extends `error_list`/`PS_list` in
+    place and returns everything needed to either finish the lap or hand off
+    to another (speed, MI) branch.
+    """
+    (actions, num_CA3_neurons, num_CA1_neurons, exploration_actions, _,
+     num_features, retreive_ID_from_position, presence_update,
+     generate_spike_byPlaceAndInput) = _task_imports(mode)
+
+    state = state.item() if isinstance(state, np.ndarray) else state
+    w_CA3_CA3 = state["w_CA3_CA3"].copy(); w_CA3_CA1 = state["w_CA3_CA1"].copy(); w_CA1_feat = state["w_CA1_feat"].copy()
+    ET_CA3 = state["ET_CA3"].copy(); PT_CA3 = state["PT_CA3"].copy()
+    plateau_flag_CA3 = state["plateau_flag_CA3"].copy(); plateau_refractory_CA3 = state["plateau_refractory_CA3"].copy()
+    CA3_FR = state["CA3_FR"].copy()
+    PT_CA1 = state["PT_CA1"].copy(); plateau_flag_CA1 = state["plateau_flag_CA1"].copy()
+    plateau_refractory_CA1 = state["plateau_refractory_CA1"].copy(); CA1_FR = state["CA1_FR"].copy()
+
+    for step in range(start_step, stop_step):
+        action_ID = exploration_actions[lap-1, step]
+        current_unit_ID, _ = retreive_ID_from_position(current_position + actions[action_ID]/2)
+        f_presence = presence_update(current_unit_ID, lap)
+        mice_speed = v_mice*feature_speed[np.where(f_presence==1)[0][0]]
+        current_T = int(step_time_length*np.linalg.norm(actions[action_ID])/(mice_speed*sec))
+        if verbose: print("Moving through state %d for %dms"%(current_unit_ID,current_T))
+
+        for tt in range(current_T):
+            if tt % dA_granularity == 0:
+                spike_trains_CA3 = generate_spike_byPlaceAndInput(
+                    np.arange(num_CA3_neurons), CA3_place_fields,
+                    current_position+actions[action_ID]*tt/current_T,
+                    current_position+actions[action_ID]*(tt+dA_granularity)/current_T,
+                    dA_granularity/sec, w_CA3_CA3, CA3_FR,
+                    mice_speed=mice_speed, seed=seed)
+                seed += 1
+                CA3_FR = (sec/dA_granularity) * np.array([len(spikes) for spikes in spike_trains_CA3])
+                spiking_neurons_CA3, spike_times_CA3 = concat_spike_trains(spike_trains_CA3, num_CA3_neurons)
+                spiking_neurons_CA3 = spiking_neurons_CA3.astype(int)
+                spike_times_CA3 = tt + np.round(spike_times_CA3, decimals=(-np.log10(dt*1e-3)).astype(int))*sec
+
+                spike_trains_CA1 = generate_spike_byInput(
+                    np.arange(num_CA1_neurons), dA_granularity/sec, w_CA3_CA1, CA3_FR, seed=seed)
+                seed += 1
+                CA1_FR = (sec/dA_granularity) * np.array([len(spikes) for spikes in spike_trains_CA1])
+                spiking_neurons_CA1, spike_times_CA1 = concat_spike_trains(spike_trains_CA1, num_CA1_neurons)
+                spiking_neurons_CA1 = spiking_neurons_CA1.astype(int)
+                spike_times_CA1 = tt + np.round(spike_times_CA1, decimals=(-np.log10(dt*1e-3)).astype(int))*sec
+
+                mean_error = (step_error/dA_granularity)
+                error_list.append(mean_error)
+                step_error = np.zeros((num_features))
+
+                mean_perceived_salience = PS_update(f_presence, MI_vector, np.abs(mean_error))
+                PS_list.append(mean_perceived_salience)
+
+                if verbose:
+                    print("act. CA3: %.4f"%(np.average(CA3_FR)))
+                    print("act. CA1: %.4f"%(np.average(CA1_FR)))
+                    print("mean error:", mean_error)
+                    print("Mean perceived salience:", mean_perceived_salience)
+                    print("--")
+
+            ET_CA3 = ET_update(tt, spike_times_CA3, spiking_neurons_CA3, ET_CA3, ET=ET_amp)
+            PT_CA3, plateau_flag_CA3, plateau_refractory_CA3 = plateau_update(
+                CA3_FR, PT_CA3, target_FR_CA3, plateau_flag_CA3, plateau_refractory_CA3,
+                base_prob=base_prob_CA3, p_slope=firing_prob_slope_CA3, seed=seed)
+            seed += 1
+            w_CA3_CA3 = BTSP_update(ET_CA3, PT_CA3, plateau_flag_CA3, w_CA3_CA3, connectivity_CA3_CA3, BTSP_scaling_CA3)
+
+            w_CA1_feat, error = feat_weight_update(w_CA1_feat, CA1_FR, f_presence)
+            step_error += np.abs(error)
+            perceived_salience = PS_update(f_presence, MI_vector, np.abs(error))
+
+            PT_CA1, plateau_flag_CA1, plateau_refractory_CA1 = plateau_update(
+                CA1_FR, PT_CA1, target_FR_CA1, plateau_flag_CA1, plateau_refractory_CA1,
+                min_prob=min_prob_CA1, PS=perceived_salience, seed=seed)
+            seed += 1
+            w_CA3_CA1 = BTSP_update(ET_CA3, PT_CA1, plateau_flag_CA1, w_CA3_CA1, connectivity_CA3_CA1, BTSP_scaling_CA1)
+
+            ET_CA3 -= ET_CA3 * (dt / tpre)
+            PT_CA3 -= PT_CA3 * (dt / tpre)
+            PT_CA1 -= PT_CA1 * (dt / tpost)
+
+        current_position = current_position + actions[action_ID]
+
+    result_state = dict(w_CA3_CA3=w_CA3_CA3, w_CA3_CA1=w_CA3_CA1, w_CA1_feat=w_CA1_feat,
+                         ET_CA3=ET_CA3, PT_CA3=PT_CA3, plateau_flag_CA3=plateau_flag_CA3,
+                         plateau_refractory_CA3=plateau_refractory_CA3, CA3_FR=CA3_FR,
+                         PT_CA1=PT_CA1, plateau_flag_CA1=plateau_flag_CA1,
+                         plateau_refractory_CA1=plateau_refractory_CA1, CA1_FR=CA1_FR)
+    return result_state, seed, current_position, error_list, PS_list, step_error
+
+
+def run_lap_prefix(mode, lap, initial_seed, state, connectivity_CA3_CA3, connectivity_CA3_CA1,
+                    CA3_place_fields, feat_idx, verbose=False):
+    """
+    Simulate the part of `lap` shared by every (speed, MI) scenario: from the
+    start of the lap up to (not including) the step where feature `feat_idx`
+    first turns on. Run this once per trial; hand its return value to
+    `run_lap_from_prefix` for each scenario instead of re-simulating the prefix.
+    """
+    (_, _, _, _, start, num_features, *_ ) = _task_imports(mode)
+    feature_step = find_feature_step(mode, lap, feat_idx)
+
+    seed = int(1e6*lap + initial_seed)
+    np.random.seed(seed); pyrandom.seed(seed)
+    neutral = np.ones(num_features)  # cue not yet present, so its scaling is irrelevant here
+    result_state, seed, position, error_list, PS_list, step_error = run_lap_steps(
+        mode, lap, seed, start, state, connectivity_CA3_CA3, connectivity_CA3_CA1,
+        CA3_place_fields, neutral, neutral, 0, feature_step, [], [], np.zeros(num_features), verbose)
+
+    return dict(state=result_state, seed=seed, position=position, next_step=feature_step,
+                error_list=error_list, PS_list=PS_list, step_error=step_error)
+
+
+def run_lap_from_prefix(mode, lap, prefix, connectivity_CA3_CA3, connectivity_CA3_CA1,
+                         CA3_place_fields, MI_vector, feature_speed, verbose=False):
+    """
+    Finish `lap` from a checkpoint produced by `run_lap_prefix`, under the
+    (speed, MI) scaling for this scenario. Returns the same fields as
+    run_online.py's per-lap .npz output.
+    """
+    (_, _, _, exploration_actions, _, _, *_ ) = _task_imports(mode)
+
+    result_state, seed, position, error_list, PS_list, step_error = run_lap_steps(
+        mode, lap, prefix["seed"], prefix["position"], prefix["state"],
+        connectivity_CA3_CA3, connectivity_CA3_CA1, CA3_place_fields,
+        MI_vector, feature_speed, prefix["next_step"], exploration_actions.shape[1],
+        list(prefix["error_list"]), list(prefix["PS_list"]), prefix["step_error"].copy(), verbose)
+
+    return dict(error_list=np.array(error_list), PS_list=np.array(PS_list), **result_state)
     

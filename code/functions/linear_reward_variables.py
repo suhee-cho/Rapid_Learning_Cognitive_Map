@@ -52,6 +52,7 @@ init_cue_exp_num = 5      # Number of laps in first reward phase (cue at state 3
 single_lap = np.ones(num_state_total, dtype=int)
 loop_num = 15             # Total number of laps
 tot_lap = loop_num
+detailed_laps = []
 
 # feature_unit_ID[phase][feature_idx] = array of state IDs where that feature is active.
 # Phase 0 (early laps): reward cue at state 3; null cue never active (state -1).

@@ -37,6 +37,10 @@ Public entry points
 
     find_place_cells(mode, trial_number)
         Post-hoc identification of CA1 place cells from saved weight matrices.
+
+    run_factorial_shock(trial_number, ...)
+        Linear-shock-only; factorial (speed, MI) control simulation for the
+        shock-cue feature, branching from a shared online-lap checkpoint.
 """
 
 import os, warnings, sys, copy
@@ -54,8 +58,9 @@ from global_variables import *
 from common_functions import init_weights, init_layervars, save_place_fields
 from common_functions import concat_spike_trains, generate_spike_byInput
 from common_functions import ET_update, plateau_update, BTSP_update, PS_update, feat_weight_update
+from common_functions import run_lap_prefix, run_lap_from_prefix, CHECKPOINT_FIELDS
 
-def run_online(mode, simul_trial, save_lap, pause_state=[], seed=12345, verbose=False):
+def run_online(mode, simul_trial,save_lap, pause_state=[], seed=12345, verbose=False):
     """
     Simulate online BTSP learning for the selected task environment.
 
@@ -83,21 +88,21 @@ def run_online(mode, simul_trial, save_lap, pause_state=[], seed=12345, verbose=
     if mode == 0:
         file_dir = os.path.join(data_path,"linear_reward")
         from linear_reward_variables import actions, num_CA3_neurons, num_CA1_neurons
-        from linear_reward_variables import tot_lap, exploration_actions, start, feature_speed, MI_vector, num_features
+        from linear_reward_variables import tot_lap, detailed_laps, exploration_actions, start, feature_speed, MI_vector, num_features
         from linear_reward_functions import retreive_ID_from_position, generate_place_field, presence_update
         from linear_reward_functions import generate_spike_byPlaceAndInput, load_PF_starts
 
     elif mode == 1:
         file_dir = os.path.join(data_path,"Tmaze")
         from Tmaze_variables import actions, num_CA3_neurons, num_CA1_neurons
-        from Tmaze_variables import tot_lap, exploration_actions, start, feature_speed, MI_vector, num_features
+        from Tmaze_variables import tot_lap, detailed_laps, exploration_actions, start, feature_speed, MI_vector, num_features
         from Tmaze_functions import retreive_ID_from_position, generate_place_field, presence_update
         from Tmaze_functions import generate_spike_byPlaceAndInput, load_PF_starts
 
     elif mode == 2:
         file_dir = os.path.join(data_path,"linear_shock")
         from linear_shock_variables import actions, num_CA3_neurons, num_CA1_neurons
-        from linear_shock_variables import tot_lap, exploration_actions, start, feature_speed, MI_vector, num_features
+        from linear_shock_variables import tot_lap, detailed_laps, exploration_actions, start, feature_speed, MI_vector, num_features
         from linear_shock_functions import retreive_ID_from_position, generate_place_field, presence_update
         from linear_shock_functions import generate_spike_byPlaceAndInput, load_PF_starts
 
@@ -282,9 +287,16 @@ def run_online(mode, simul_trial, save_lap, pause_state=[], seed=12345, verbose=
             # Save end-of-lap snapshot.
             if lap%save_lap == 0:
                 file_out = os.path.join(file_dir,foldername,"lap_%d.npz"%lap)
-                np.savez_compressed(file_out,
-                    error_list=error_list,PS_list=PS_list,
-                    w_CA3_CA3=w_CA3_CA3,w_CA3_CA1=w_CA3_CA1,w_CA1_feat=w_CA1_feat)
+                if lap in detailed_laps:
+                    np.savez_compressed(file_out,
+                        error_list=error_list,PS_list=PS_list,
+                        w_CA3_CA3=w_CA3_CA3,w_CA3_CA1=w_CA3_CA1,w_CA1_feat=w_CA1_feat,
+                        ET_CA3=ET_CA3,PT_CA3=PT_CA3,plateau_flag_CA3=plateau_flag_CA3,plateau_refractory_CA3=plateau_refractory_CA3,CA3_FR=CA3_FR,
+                        PT_CA1=PT_CA1,plateau_flag_CA1=plateau_flag_CA1,plateau_refractory_CA1=plateau_refractory_CA1,CA1_FR=CA1_FR)
+                else:
+                    np.savez_compressed(file_out,
+                        error_list=error_list,PS_list=PS_list,
+                        w_CA3_CA3=w_CA3_CA3,w_CA3_CA1=w_CA3_CA1,w_CA1_feat=w_CA1_feat)
                 del file_out
 
 def find_place_cells(mode, trial_number):
@@ -348,3 +360,215 @@ def find_place_cells(mode, trial_number):
 
             pklf_name = os.path.join(file_dir, foldername, "detected_PC/CA1_PF_lap_"+str(load_episode)+".pkl")
             save_place_fields(CA1_place_fields, pklf_name)
+
+def run_online_STDP(simul_trial, lap_increment=[500,500,500,500,200,200,200,200,200],
+                    _tau=20, _eta=1e-3, seed=12345, verbose=False):
+    """
+    Simulate online STDP learning for the selected task environment.
+
+    Parameters
+    ----------
+    simul_trial : int
+        Number of independent simulation trials (each gets a fresh seed offset).
+    save_lap : int
+        Checkpoint interval: weights + error signals are written every this many laps.
+    seed : int, optional
+        Base random seed; each trial shifts it by trial*1e5, each lap by lap*1e6.
+    verbose : bool, optional
+        Print per-step firing rates and error signals (slow; for debugging only).
+    """
+
+    # -----------------------------------------------------------------
+    # Task-specific imports: each mode provides the same interface
+    # (same variable/function names) so the loop body is mode-agnostic.
+    # -----------------------------------------------------------------
+
+    file_dir = os.path.join(data_path,"linear_reward")
+    from linear_reward_variables import actions, num_CA3_neurons
+    from linear_reward_variables import num_state_total
+    from linear_reward_functions import retreive_ID_from_position, generate_place_field
+    from linear_reward_functions import generate_spike_byPlaceAndInput, load_PF_starts
+    dApre = _eta; tpre = _tau
+
+    dA_granularity = 100
+
+    for trial in range(simul_trial):
+        
+        print("Running %dth simulation"%(trial+1))
+        foldername = "STDP"+str(trial)
+        os.makedirs(os.path.join(file_dir,foldername), exist_ok=True)
+
+        # Derive a unique, reproducible seed for this trial so trials are
+        # independent but fully deterministic given the base seed.
+        initial_seed = int(seed+trial*1e5)
+        lap = 0
+
+        # Initialize all three weight matrices and the random sparse connectivity masks.
+        # w_CA3_CA3  : (num_CA3, num_CA3) — recurrent CA3 synapses
+        w_CA3_CA3, _, _, connectivity_CA3_CA3, _ = init_weights(num_CA3_neurons,1,1)
+
+        # Load pre-generated CA3 place field centers from disk; generate them if missing.
+        # CA3_place_fields : dict {neuron_id: 2D position of place field peak}
+        try: CA3_place_fields = load_PF_starts()
+        except: CA3_place_fields, _, _ = generate_place_field(initial_seed,num_CA3_neurons)
+
+        # Per-layer dynamic variables (reset at the start of each trial):
+        #   ET  – eligibility trace amplitude (pre-synaptic; shape: num_neurons)
+        #   CA3_FR – instantaneous population firing rates [Hz]
+        ET_CA3, _, _, _, CA3_FR = init_layervars(num_CA3_neurons)
+
+        for lap_incr in tqdm(lap_increment):
+            # try: 
+            # ff = np.load(os.path.join(file_dir, foldername, "lap_%d.npz" % lap))
+            # init_w_CA3_CA3=ff["w_CA3_CA3"];ET_CA3=ff["ET_CA3"];CA3_FR=ff["CA3_FR"];connectivity_CA3_CA3=ff["connectivity_CA3_CA3"];del ff
+            # except: pass
+
+            lap += lap_incr
+
+            w_CA3_CA3[~connectivity_CA3_CA3] = 0  # enforce sparse connectivity mask
+            init_w_CA3_CA3 = copy.deepcopy(w_CA3_CA3); w_CA3_CA3 = copy.deepcopy(init_w_CA3_CA3)
+
+            # Each lap gets its own seed so laps are independent within a trial.
+            seed = int(1e3*lap+initial_seed)
+
+            np.random.seed(seed)
+            pyrandom.seed(seed)
+
+            current_position = np.array([0,0])  # reset animal position to start of maze
+
+            # ---------------------------------------------------------------
+            # Step loop: the animal takes one discrete action per step
+            # (e.g., move one maze unit left/right/up/down).
+            # for this lap (shape: num_steps_per_lap).
+            # ---------------------------------------------------------------
+            for _ in range(num_state_total):
+
+                action_ID = 1
+                # Identify which maze state (discrete location) the animal is in
+                # at the midpoint of the current step.
+                current_unit_ID, _ = retreive_ID_from_position(current_position + actions[action_ID]/2)
+
+                # Effective running speed depends on the type of current feature.
+                mice_speed = v_mice
+                # Duration of this step in ms, scaled by movement speed.
+                current_T = sec
+                if verbose: print("Moving through state %d for %dms"%(current_unit_ID,current_T))
+
+                # ---------------------------------------------------------------
+                # Time loop: 1 ms resolution; runs for current_T ms per step.
+                # Spike trains are regenerated every dA_granularity ms (default 100 ms).
+                # ---------------------------------------------------------------
+                for tt in range(sec):
+
+                    if tt%dA_granularity == 0:
+                        # --- CA3 spike generation ---
+                        # Each CA3 neuron fires according to its place-field tuning curve
+                        # at the animal's current position PLUS recurrent input from w_CA3_CA3.
+                        # Returns a list of spike trains (one per neuron) over dA_granularity ms.
+                        spike_trains_CA3 = generate_spike_byPlaceAndInput(
+                            np.arange(num_CA3_neurons),
+                            CA3_place_fields,
+                            current_position+actions[action_ID]*tt/current_T,      # start of sub-interval
+                            current_position+actions[action_ID]*(tt+dA_granularity)/current_T,  # end
+                            dA_granularity/sec, w_CA3_CA3, CA3_FR,
+                            mice_speed=v_mice,
+                            seed=seed)
+                        seed += 1
+                        # Convert spike trains to an instantaneous population rate vector [Hz].
+                        CA3_FR = (sec/dA_granularity) * np.array([len(spikes) for spikes in spike_trains_CA3])
+                        # Flatten the per-neuron spike-train lists into two arrays:
+                        #   spiking_neurons_CA3 — neuron index of each spike event
+                        #   spike_times_CA3     — time of each spike event (ms, offset by tt)
+                        spiking_neurons_CA3, spike_times_CA3 = concat_spike_trains(spike_trains_CA3, num_CA3_neurons)
+                        spiking_neurons_CA3 = spiking_neurons_CA3.astype(int)
+                        spike_times_CA3 = tt + np.round(spike_times_CA3,decimals=(-np.log10(dt*1e-3)).astype(int))*sec
+
+                        if verbose:
+                            print("act. CA3: %.4f"%(np.average(CA3_FR)))
+                            print("--")
+
+                    # --- CA3 STDP update (recurrent synapses) ---
+                    spiking_CA3 = spiking_neurons_CA3[np.where(spike_times_CA3==tt)[0]]
+                    ET_CA3[spiking_CA3] += dApre
+
+                    # Step 3: Apply STDP rule.
+                    w_CA3_CA3[spiking_CA3,:] += ET_CA3[None, :]
+                    w_CA3_CA3[:,spiking_CA3] += ET_CA3[:, None]
+                    w_CA3_CA3[~connectivity_CA3_CA3] = 0  # enforce sparse connectivity mask
+
+                    # --- Exponential decay of eligibility and plateau traces ---
+                    ET_CA3 -= ET_CA3 * (dt / tpre)
+
+                current_position += actions[action_ID]
+
+            lap_w_incr = w_CA3_CA3 - init_w_CA3_CA3
+            w_CA3_CA3 += (lap_incr-1)*lap_w_incr
+
+            # Save end-of-lap snapshot.
+            file_out = os.path.join(file_dir,foldername,"lap_%d.npz"%lap)
+            np.savez_compressed(file_out,
+                                w_CA3_CA3=w_CA3_CA3, connectivity_CA3_CA3=connectivity_CA3_CA3,
+                                CA3_FR=CA3_FR, ET_CA3=ET_CA3)
+            del file_out
+        del current_position
+
+# (target_speed, target_MI) applied to the shock-cue feature only; all other
+# features keep neutral speed=1, MI=1.
+FACTORIAL_SHOCK_SCENARIOS = [(1, 1), (1, 3), (1, 5), (1, 7), (1, 10),
+                             (2, 1), (2, 3), (2, 5), (2, 7), (2, 10),
+                             (0.5, 1), (0.5, 3), (0.5, 5), (0.5, 7), (0.5, 10)]
+
+def run_factorial_shock(trial_number, data_root=os.path.join(data_path,"linear_shock"),
+                         out_root=os.path.join(base_path,"results/factorial_control"), resume_lap=3, next_lap=4,
+                         feat_idx=1, scenarios=FACTORIAL_SHOCK_SCENARIOS):
+    """
+    Factorial control simulation (linear shock only): resume each trial's
+    `resume_lap` checkpoint (exploration phase, shock not yet present) and
+    re-run `next_lap` — the lap where the shock cue turns on — under every
+    (speed, MI) scaling in `scenarios`, applied to the shock feature
+    (`feat_idx`) only.
+
+    """
+    from linear_shock_functions import load_PF_starts
+    from linear_shock_variables import num_features
+
+    mode = 2
+    CA3_place_fields = load_PF_starts(os.path.join(data_root, "PF_peak_data.pkl"))
+
+    for trial in range(trial_number):
+        foldername = "trial%d" % trial
+        print("Shock scenario — trial %d/%d" % (trial + 1, trial_number))
+
+        sim_info = np.load(os.path.join(data_root, foldername, "simulation_information.npz"))
+        connectivity_CA3_CA3 = sim_info["connectivity_CA3_CA3"]
+        connectivity_CA3_CA1 = sim_info["connectivity_CA3_CA1"]
+        initial_seed = int(sim_info["initial_seed"])
+
+        checkpoint = np.load(os.path.join(data_root, foldername, "lap_%d.npz" % resume_lap))
+        state = {k: checkpoint[k] for k in CHECKPOINT_FIELDS}
+
+        out_trial_dir = os.path.join(out_root, foldername)
+        os.makedirs(out_trial_dir, exist_ok=True)
+
+        # Shared prefix (identical across all scenarios below): simulate once
+        # per trial up to the step right before the shock cue turns on, instead
+        # of re-simulating it inside every scenario iteration.
+        prefix_out = os.path.join(out_trial_dir, "lap_%d_prefix.npz" % next_lap)
+        if os.path.exists(prefix_out):
+            prefix = np.load(prefix_out, allow_pickle=True)
+        else:
+            prefix = run_lap_prefix(mode, next_lap, initial_seed, state,
+                                     connectivity_CA3_CA3, connectivity_CA3_CA1,
+                                     CA3_place_fields, feat_idx)
+            np.savez_compressed(prefix_out, **prefix)
+
+        for target_speed, target_MI in tqdm(scenarios):
+            MI_vector = np.ones(num_features); MI_vector[feat_idx] = target_MI
+            feature_speed = np.ones(num_features); feature_speed[feat_idx] = target_speed
+
+            result = run_lap_from_prefix(mode, next_lap, prefix,
+                                          connectivity_CA3_CA3, connectivity_CA3_CA1,
+                                          CA3_place_fields, MI_vector, feature_speed)
+
+            file_out = os.path.join(out_trial_dir, "lap_%d_speed_%g_MI_%g.npz" % (next_lap, target_speed, target_MI))
+            np.savez_compressed(file_out, target_speed=target_speed, target_MI=target_MI, **result)

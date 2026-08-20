@@ -54,6 +54,7 @@ num_CA1_neurons = num_CA3_neurons
 single_lap = np.array([[0,0,0,4,6,2,2,2],[0,0,0,4,7,3,3,3]])
 loop_num = 5
 tot_lap = single_lap.shape[0]*loop_num  # 10 laps total
+detailed_laps = []
 
 # feature_unit_ID[feat]: state IDs where feature feat is physically present.
 # Feat 0 = left-arm outcome (state num_state_row = 3)
@@ -78,6 +79,7 @@ num_features = len(MI_vector)
 rest_time = 5000  # [ms] — longer rest to allow complete replay of the longer T-maze trajectory
 
 # Canonical replay trajectories for replay-type classification (used in run_offline.detect_replay_type)
-replay_trajectory = [[3,4,5,6,7,8,9],    # right arm
-                     [0,1,2,6,5,4,3],    # reverse left arm
-                     [0,1,2,6,7,8,9]]    # forward right arm from stem
+maze_component = [[0,1,2,6],[3,4,5,6],[6,7,8,9]]  # stem, left arm, right arm
+replay_trajectory = [maze_component[1][:-1] + maze_component[2],  # shortcut
+                     maze_component[0][:-1] + maze_component[1][::-1],  # left arm from stem
+                     maze_component[0][:-1] + maze_component[2]]  # right arm from stem

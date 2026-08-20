@@ -43,7 +43,7 @@ import numpy as np
 from common_functions import *
 
 base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2])
-data_path = os.path.join(base_path,"results/linear_reward")
+data_path = os.path.join(base_path,"restults/linear_reward")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
 def sample_spatial_points(unit_gran):
@@ -596,7 +596,7 @@ def evaluate_theta_modulation(t, start_position, phi_mid, f_theta, phase_init):
     # theta modulation of firing rate + phase precession
     try: distance = calc_distance(start_position, phi_mid) #[unit]
     except: print(start_position, phi_mid)
-    phase = 2*np.pi*(f_theta*t + phase_init)
+    phase = 2*np.pi*(f_theta*(t+start_position[-1]) + phase_init)
     phase_shift = -2*np.pi*distance # [unit]
     return np.cos(phase - phase_shift)
 
