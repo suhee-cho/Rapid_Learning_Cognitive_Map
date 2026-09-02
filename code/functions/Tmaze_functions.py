@@ -893,3 +893,258 @@ def load_spike_trains(npzf_name):
         spike_times = np.concatenate((spike_times, np.asarray(spike_trains[neuron_id])), axis=0)
 
     return spiking_neurons, spike_times
+
+# =============================================================================
+# 15. Per-region replay burst detection (Carey T-maze replay analysis)  [NEW]
+# =============================================================================
+# Moved from FigS6_Carey_replay.ipynb: detects replay-like population bursts
+# separately within named T-maze regions (e.g. stem / left arm / right arm)
+# and merges cross-region detections of the same physical event.
+
+def state_color(state, left_states, right_states, left_color="steelblue", right_color="tomato", default_color="lightgrey"):
+    """
+    Color-code a T-maze state by arm membership (for replay/behaviour plots).
+
+    Parameters
+    ----------
+    state : int
+    left_states, right_states : list of int
+    left_color, right_color, default_color : str
+
+    Returns
+    -------
+    str
+    """
+    if state in left_states: return left_color
+    if state in right_states: return right_color
+    return default_color
+
+def get_region_neuron_ids(states):
+    """
+    Union of CA3 neuron IDs whose place field lies in any of `states`.
+
+    Parameters
+    ----------
+    PF_dict : dict {neuron_id: [row, col]}
+    states : list of int
+
+    Returns
+    -------
+    np.ndarray of int
+    """
+    PF_dict = load_PF_starts()
+    place_cell_ID_list = generate_place_cell_ID_list(
+        np.array(list(PF_dict.keys()), dtype=int), np.array(list(PF_dict.values())))
+    ids = np.concatenate([place_cell_ID_list[s] for s in states])
+    return np.unique(ids)
+
+def region_population_rate(spike_t_ms, spike_nids, region_nids, duration_ms, bin_ms=1.0):
+    """Binned, per-neuron population rate (Hz), built only from `region_nids` spikes."""
+    bins         = np.arange(0, duration_ms + bin_ms, bin_ms)
+    in_region    = np.isin(spike_nids, region_nids)
+    spk_count, _ = np.histogram(spike_t_ms[in_region], bins=bins)
+    rate_hz      = spk_count / (max(len(region_nids), 1) * (bin_ms / 1000))
+    times_ms     = bins[:-1] + bin_ms / 2
+    return rate_hz, times_ms
+
+def smooth_rate(rate_arr, dt_ms, sigma_ms=20.0):
+    from scipy.ndimage import gaussian_filter1d
+    return gaussian_filter1d(rate_arr, sigma=sigma_ms / dt_ms)
+
+def detect_burst_intervals(rate_smooth, times_ms, threshold, min_dur_ms=70, min_gap_ms=50):
+    """Return list of (t_start_ms, t_end_ms) for contiguous bursts above threshold."""
+    above = rate_smooth > threshold
+    if not above.any():
+        return []
+    changes = np.diff(above.astype(int))
+    on_idx  = np.where(changes ==  1)[0] + 1
+    off_idx = np.where(changes == -1)[0] + 1
+    if above[0]:  on_idx  = np.concatenate([[0],            on_idx])
+    if above[-1]: off_idx = np.concatenate([off_idx, [len(times_ms) - 1]])
+
+    intervals = []
+    for si, ei in zip(on_idx, off_idx):
+        t0, t1 = times_ms[si], times_ms[ei]
+        if t1 - t0 < min_dur_ms:
+            continue
+        if intervals and t0 - intervals[-1][1] < min_gap_ms:
+            intervals[-1] = (intervals[-1][0], t1)   # merge
+        else:
+            intervals.append((t0, t1))
+    return intervals
+
+def classify_arm_direction(burst_spike_t, burst_pos, r_thresh=0.15, min_spikes=5):
+    """
+    Pearson r between spike time and PF position along the region's own axis
+    (row for the stem, column for the arms).  A burst is a *valid replay
+    event* for that region when |r| exceeds `r_thresh`, i.e. spikes progress
+    systematically along the region rather than firing without sequential
+    structure.
+    """
+    valid = burst_pos >= 0
+    if valid.sum() < min_spikes:
+        return False
+    r = np.corrcoef(burst_spike_t[valid], burst_pos[valid])[0, 1]
+    return (not np.isnan(r)) and (abs(r) > r_thresh)
+
+def count_region_replay_events(spike_t_ms, spike_nids, states, axis,
+                               duration_ms, bin_ms=1.0, sigma_ms=20,
+                               thresh_factor=0.5, min_dur_ms=50, min_gap_ms=50,
+                               r_thresh=0.1, min_spikes=5):
+    """
+    Isolate spikes from neurons whose place field lies in `states`, detect
+    burst intervals in that subpopulation's own rate, and keep the bursts
+    that pass the sequential-correlation check (valid replay events).
+
+    Returns
+    -------
+    n_valid   : int, number of valid replay events
+    n_bursts  : int, number of detected burst intervals (before validity check)
+    intervals : list of (t0, t1) for the valid replay events
+    """
+    region_nids        = get_region_neuron_ids(states)
+    rate_arr, times_ms = region_population_rate(spike_t_ms, spike_nids,
+                                                 region_nids, duration_ms, bin_ms)
+    # rate_sm   = smooth_rate(rate_arr, bin_ms, sigma_ms)
+    # threshold = rate_sm.mean() + thresh_factor * rate_sm.std()
+    # bursts    = detect_burst_intervals(rate_sm, times_ms, threshold, min_dur_ms, min_gap_ms)
+    PF_dict = load_PF_starts()
+    from common_functions import slice_high_activity
+    threshold = rate_arr.mean() + thresh_factor * rate_arr.std()
+    bursts = slice_high_activity(rate=rate_arr, th=threshold,
+                                    min_len=min_dur_ms, len_sim=duration_ms)
+
+    in_region  = np.isin(spike_nids, region_nids)
+    region_t   = spike_t_ms[in_region]
+    region_pos = np.array([PF_dict.get(int(n), [-1, -1])[axis] for n in spike_nids[in_region]])
+
+    valid_intervals = []
+    for t0, t1 in bursts:
+        mask = (region_t >= t0) & (region_t <= t1)
+        if mask.sum() < min_spikes:
+            continue
+        if classify_arm_direction(region_t[mask], region_pos[mask], r_thresh, min_spikes):
+            valid_intervals.append((t0, t1))
+    return len(valid_intervals), len(bursts), valid_intervals
+
+def count_replay_by_region(spike_t_ms, spike_nids, duration_ms, region_defs, **kwargs):
+    """
+    Run count_region_replay_events separately for each region in `region_defs`.
+
+    Parameters
+    ----------
+    region_defs : dict {region_name: {"states": [...], "axis": int}}
+    """
+    counts, n_bursts, intervals = {}, {}, {}
+    for region, spec in region_defs.items():
+        n_valid, nb, ivals = count_region_replay_events(
+            spike_t_ms, spike_nids, spec["states"], spec["axis"],
+            duration_ms, **kwargs
+        )
+        counts[region]    = n_valid
+        n_bursts[region]  = nb
+        intervals[region] = ivals
+    return counts, n_bursts, intervals
+
+def merge_close_events(intervals, merge_gap_ms=30):
+    """
+    Merge a list of (t0, t1) intervals so that any two whose gap (start of
+    the later one minus end of the earlier one) is < merge_gap_ms collapse
+    into a single event.
+    """
+    if not intervals:
+        return []
+    ordered = sorted(intervals, key=lambda iv: iv[0])
+    merged  = [ordered[0]]
+    for t0, t1 in ordered[1:]:
+        last_t0, last_t1 = merged[-1]
+        if t0 - last_t1 < merge_gap_ms:
+            merged[-1] = (last_t0, max(last_t1, t1))
+        else:
+            merged.append((t0, t1))
+    return merged
+
+def count_total_replay_events(region_intervals, merge_gap_ms=30):
+    """
+    Combine the valid replay-event intervals detected separately across regions
+    (e.g. stem, left arm, right arm).  A single physical replay that sweeps
+    across regions (e.g. stem -> left arm) gets detected once per region, so
+    events starting within `merge_gap_ms` of another region's event are merged
+    and counted as ONE big replay event.
+
+    Parameters
+    ----------
+    region_intervals : dict of {region: [(t0, t1), ...]}, e.g. the
+                       `intervals` dict returned by count_replay_by_region.
+
+    Returns
+    -------
+    n_total : int, number of merged replay events
+    merged  : list of (t0, t1) for the merged events
+    """
+    all_intervals = []
+    for ivals in region_intervals.values():
+        all_intervals.extend(ivals)
+    merged = merge_close_events(all_intervals, merge_gap_ms)
+    return len(merged), merged
+
+# =============================================================================
+# 16. Cached network-file lookup (online vs. offline-consolidated)  [NEW]
+# =============================================================================
+# Moved from FigS6_Carey_replay.ipynb: locates per-trial online-learning
+# ("lap_N.npz") and offline-consolidated ("CA1_activity_lap_N_replay_M.npz")
+# output files under a given scenario data directory.
+
+def lap_file(data_dir, folder_root, tr, target_lap):
+    return os.path.join(data_dir, folder_root+str(tr), "lap_%d.npz" % target_lap)
+
+def replay_activity_file(data_dir, folder_root, tr, target_lap, rest_time_ms):
+    return os.path.join(data_dir, folder_root+str(tr), "activity",
+                         "CA1_activity_lap_%d_replay_%d.npz" % (target_lap, rest_time_ms))
+
+def has_online_network(data_dir, folder_root, trial_number, target_lap):
+    return all(os.path.exists(lap_file(data_dir, folder_root, tr, target_lap)) for tr in range(trial_number))
+
+def has_offline_network(data_dir, folder_root, trial_number, target_lap, rest_time_ms):
+    return all(os.path.exists(replay_activity_file(data_dir, folder_root, tr, target_lap, rest_time_ms))
+               for tr in range(trial_number))
+
+# =============================================================================
+# 17. Behavioral choice simulation across trials  [NEW]
+# =============================================================================
+# Moved from FigS6_Carey_replay.ipynb: rolls out `behavior_markov` many times
+# per trial's transition matrix and tallies which outcome state was reached.
+
+def simulate_choices(tm, trial_number, num_behav_trial, total_time, start_ID, end_state):
+    """
+    Roll out `num_behav_trial` Markov-chain trajectories per trial.
+
+    Parameters
+    ----------
+    tm : np.ndarray, shape (trial_number, num_states, num_states)
+        Per-trial transition matrices (see compute_transition_matrix).
+    trial_number, num_behav_trial, total_time : int
+    start_ID : int
+    end_state : list of int, length 2
+        [outcome_A_state, outcome_B_state].
+
+    Returns
+    -------
+    goal_frac : np.ndarray, shape (trial_number, 3)
+        Fraction of runs ending at [outcome_A, outcome_B, neither].
+    goal_time : np.ndarray, shape (trial_number, num_behav_trial)
+        Step at which each run terminated (nan if it timed out).
+    """
+    outcome_A, outcome_B = end_state
+    goal_frac = np.zeros((trial_number, 3))
+    goal_time = np.full((trial_number, num_behav_trial), np.nan)
+    for tr in range(trial_number):
+        counts = np.zeros(3)
+        for bb in range(num_behav_trial):
+            _, gt, gs = behavior_markov(tm[tr], total_time=total_time, start_state=start_ID, end_state=end_state)
+            goal_time[tr, bb] = gt
+            if gs == outcome_A: counts[0] += 1
+            elif gs == outcome_B: counts[1] += 1
+            else: counts[2] += 1
+        goal_frac[tr] = counts / num_behav_trial
+    return goal_frac, goal_time
