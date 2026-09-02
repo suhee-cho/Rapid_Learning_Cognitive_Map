@@ -37,18 +37,9 @@ num_state_total = num_state_row+num_state_col  # Total: 10 discrete states
 circular = False  # Non-circular topology (dead-ends at both arm tips)
 
 # 2-D (row, col) centre coordinate of each state
-state_position = np.array([
-    [3.5, 3.5],   # state 0  (1-indexed: 1)  — stem top
-    [2.5, 3.5],   # state 1  (1-indexed: 2)  — stem mid
-    [1.5, 3.5],   # state 2  (1-indexed: 3)  — stem bottom
-    [0.5, 0.5],   # state 3  (1-indexed: 4)  — left-arm end
-    [0.5, 1.5],   # state 4  (1-indexed: 5)
-    [0.5, 2.5],   # state 5  (1-indexed: 6)
-    [0.5, 3.5],   # state 6  (1-indexed: 7)  — horizontal junction
-    [0.5, 4.5],   # state 7  (1-indexed: 8)  — right-arm start  [NOT potentiated]
-    [0.5, 5.5],   # state 8  (1-indexed: 9)                      [NOT potentiated]
-    [0.5, 6.5],   # state 9  (1-indexed: 10) — right-arm end     [NOT potentiated]
-])
+state_position = np.array([[3.5, 3.5], [2.5, 3.5], [1.5, 3.5],          # stem (top → junction)
+                            [0.5, 0.5], [0.5, 1.5], [0.5, 2.5], [0.5, 3.5], [0.5, 4.5], [0.5, 5.5], [0.5, 6.5]])  # horizontal arm
+
 # 8 discrete actions: cardinal unit steps + half-steps for turning at the junction
 actions = np.array([[-1, 0], [1, 0], [0, -1], [0, 1],      # full steps: up, down, left, right
                     [-0.5, 0], [0.5, 0], [0, -0.5], [0, 0.5]])  # half steps (used at junction)

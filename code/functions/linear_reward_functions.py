@@ -43,7 +43,7 @@ import numpy as np
 from common_functions import *
 
 base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2])
-data_path = os.path.join(base_path,"results/linear_reward")
+data_path = os.path.join(base_path,"restults/linear_reward")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
 def sample_spatial_points(unit_gran):

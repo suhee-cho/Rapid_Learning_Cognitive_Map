@@ -512,7 +512,7 @@ def generate_spike_byPlaceAndInput(neuron_ids, place_fields, start_position, sto
 
     return spike_trains
 
-def retreive_ID_from_position(position):
+def retreive_ID_from_position(position, circular=False):
     """
     Map a continuous 2-D position to the discrete maze state it falls in.
 

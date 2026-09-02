@@ -1137,14 +1137,16 @@ def slice_high_activity(rate, th, min_len, len_sim, bin_=10):
     :param bin_: bin size for rate averaging (see `helper/_avg_rate()`)
     """
 
-    # assert min_len >= 128, "Spectral analysis won't work on sequences shorter than 128 ms"
+    assert min_len >= 128, "Spectral analysis won't work on sequences shorter than 128 ms"
     idx = np.where(_avg_rate(rate, bin_, len_sim) >= th)[0]
     high_act = _get_consecutive_sublists(idx.tolist())
     slice_idx = []
     for tmp in high_act:
         if len(tmp) >= np.floor(min_len/bin_):
             slice_idx.append((tmp[0]*bin_, (tmp[-1]+1)*bin_))
-
+    # if not slice_idx:
+    #     print("Sustained high network activity can't be detected"
+    #           "(bin size:%i, min length:%.1f and threshold:%.2f)!" % (bin_, min_len, th))
     return slice_idx
 
 # [NEW] — simulates animal behaviour as a Markov chain given a transition matrix P.
