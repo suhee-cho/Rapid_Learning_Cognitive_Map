@@ -7,14 +7,51 @@ This module is structurally identical to linear_reward_functions.py.
 The only behavioural difference is the presence_update logic, which marks
 the aversive cue (shock at state 7) as active when the lap is in `cue_lap`.
 
-Attribution guide (same convention as linear_reward_functions.py):
-  All functions in this file follow the same attribution as their counterparts
-  in linear_reward_functions.py (see that file's module docstring for details).
-  Key differences from the reward version:
-    - cue_lap is a 1-D array (single phase) rather than a list of two phases.
-    - presence_update checks a single cue_lap (not list of two) and sets the
-      shock feature (index 1) active rather than the reward feature (index 0).
-    - calc_distance does NOT use wrap-around (same as linear track, no circular).
+Key differences from the reward version:
+  - cue_lap is a 1-D array (single phase) rather than a list of two phases.
+  - presence_update checks a single cue_lap (not list of two) and sets the
+    shock feature (index 1) active rather than the reward feature (index 0).
+  - calc_distance does NOT use wrap-around (same as linear track, no circular).
+
+Attribution guide
+-----------------
+Functions marked [NEW] were written for this project.
+Functions marked [REVISED] are adapted from Ecker et al. (2022), eLife 11:e71850
+(https://github.com/KaliLab/ca3net) with changes noted inline.
+Functions marked [COPIED] are taken from Ecker et al. (2022), eLife 11:e71850
+(https://github.com/KaliLab/ca3net) with only minor edits.
+
+Summary of attribution per function (in file order):
+  analyse_replay_type         — [NEW] classifies detected replay events based on their direction.
+  compute_transition_matrix   — [NEW] softmax-weighted Markov transition matrix
+                                 built from state values; used for downstream
+                                 behavioural analysis, not by the simulation.
+  sample_spatial_points       — [NEW] uniform 2-D grid of sample points along the
+                                 track.
+  load_tuning_curves          — [REVISED] adapted to call this module's get_tuning_curve.
+  analyse_replay              — [REVISED] adapted from Ecker et al.'s replay detection;
+                                 now handles 2-D tuning curves.
+  sample_place_cells          — [REVISED] extended from 1-D to 2-D; partitions
+                                 neurons between the row/column track segments.
+  generate_place_field        — [NEW] thin wrapper around sample_place_cells
+  generate_place_cell_ID_list — [NEW]
+  presence_update             — [NEW] marks the aversive (shock) cue active while
+                                 the current lap is in cue_lap.
+  reorder_neuron_idx          — [NEW]
+  generate_spike_byPlace      — [REVISED] from Ecker et al.'s poisson_proc helpers;
+                                 extended to 2-D inhom_poisson.
+  generate_spike_byPlaceAndInput — [NEW] adds recurrent CA3 input to the
+                                 place-cell spike generation.
+  retreive_ID_from_position   — [NEW]
+  calc_distance               — [REVISED] extended to 2-D; no wrap-around, since the
+                                 animal hits the wall at state 7 and turns back.
+  evaluate_theta_modulation   — [REVISED] from Ecker et al.; extended to 2-D position.
+  get_tuning_curve            — [REVISED] from Ecker et al.; uses 2-D calc_distance.
+  evaluate_lambda_t           — [REVISED] from Ecker et al.; 2-D position & direction.
+  load_PF_starts              — [REVISED] identical logic; path updated.
+  inhom_poisson               — [REVISED] from Ecker et al.; thinning now uses the 2-D lambda.
+  _avg_rate                   — [COPIED] from Ecker et al..
+  load_spike_trains           — [COPIED] from Ecker et al..
 """
 
 from global_variables import *
@@ -30,7 +67,7 @@ pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 def analyse_replay_type(spk_time, spk_neurons, rate, target_trajectory=[[3,4,5,6],[3,2,1,0]],
                         coverage_thr=0.75, save_path=False, verbose=True):
     """
-    Classify detected replay events into canonical T-maze trajectory types.
+    Classify detected replay events based on their direction.
 
     For each trajectory in `target_trajectory`, isolates the CA3 neurons whose
     place fields lie along that path (neurons may overlap across trajectory types),
@@ -48,8 +85,7 @@ def analyse_replay_type(spk_time, spk_neurons, rate, target_trajectory=[[3,4,5,6
         Full CA3 population rate time series; used only for its length and time span
         to set the binning resolution for the per-trajectory rate.
     target_trajectory : list of lists  (default: replay_trajectory)
-        Each entry is a list of state IDs defining one full canonical replay path.
-        Defaults to the three types in Tmaze_variables.replay_trajectory:
+        Each entry is a list of state IDs defining one full canonical replay path:
           [0] forward        [3,4,5,6]
           [1] backward  [0,1,2,3]
     coverage_thr : float
@@ -96,9 +132,7 @@ def analyse_replay_type(spk_time, spk_neurons, rate, target_trajectory=[[3,4,5,6
         # Recompute population rate from target neurons only [Hz]
         counts, _ = np.histogram(spk_time[mask], bins=rate_bins)
         rate_target = counts / (n_target * bin_dur_s)
-        # print(len(rate))
-        # print(len(rate_target))
-        # print(rate_target.max())
+
         result = analyse_replay(spk_time[mask], spk_neurons[mask], rate_target*20, verbose=False)
         if not isinstance(result[1], dict):
             detected_per_type.append(detected)
@@ -181,28 +215,6 @@ def compute_transition_matrix(num_states, value_states, possible_actions, end_st
             value_matrix[state_ID,next_state_ID] = values_action
 
     return transition_matrix, value_matrix
-
-def sample_spatial_points(unit_gran):
-    """
-    Generate a uniform grid of 2-D spatial sample points along the linear track.
-
-    For the linear reward track (row = 0), points are sampled at `unit_gran`
-    sub-unit intervals along the column axis.
-
-    Parameters
-    ----------
-    unit_gran : int
-        Number of sample points per maze unit.
-
-    Returns
-    -------
-    spatial_points : np.ndarray, shape (unit_gran * num_state_total, 2)
-        Array of (row, col) coordinates covering the entire track.
-    """
-    col = np.linspace(0,num_state_total-1.0/unit_gran,unit_gran*num_state_total).reshape(-1, 1)
-    row = np.zeros((len(col),1))
-    spatial_points = np.hstack([row, col])
-    return spatial_points
 
 def load_tuning_curves(spatial_points):
     """

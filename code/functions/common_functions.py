@@ -8,29 +8,70 @@ Attribution guide
 -----------------
 Functions are tagged with one of three labels:
 
-  [NEW]           — written for this project; no equivalent in Ecker et al, 2022, ELife.
-  [REVISED]       — adapted from Ecker et al. (https://github.com/KaliLab/ca3net);
+  [NEW]           — written for this project.
+  [REVISED]       — adapted from Ecker et al. (2022), eLife 11:e71850 (https://github.com/KaliLab/ca3net);
                     core logic is preserved but the interface or implementation
                     has been meaningfully changed (e.g., extended to 2-D,
                     vectorised, or combined with additional logic).
   [COPIED]        — taken from Ecker et al. with only cosmetic edits.
 
-Sections
---------
+Sections and function index
+---------------------------
+The tag on each section header is the default attribution for the functions in
+that section; a per-function tag is given only where it differs from that
+default.  Section numbering continues in Tmaze_functions.py (sections 15-17).
+
 1.  Weight / layer initialisation            (NEW)
+      init_weights, init_layervars
+
 2.  Rate-to-spike helpers                    (REVISED / NEW)
+      input_driven_rate, generate_spike_byInput, add_spike_train
+
 3.  Spike-train utilities                    (NEW)
+      concat_spike_trains, find_PF_peak
+
 4.  BTSP learning rule components            (NEW)
+      plateau_probability_calc, ET_update, plateau_update, BTSP_update
+
 5.  Feature prediction weight update         (NEW)
+      feat_weight_update, PS_update
+
 6.  Poisson spike generation                 (REVISED / COPIED)
+      _generate_exp_rand_numbers  [COPIED],  hom_poisson  [REVISED]
+
 7.  Curve fitting                            (NEW)
+      exponential_func, curve_fit_calc
+
 8.  Brian2 monitor post-processing           (REVISED)
+      preprocess_monitors
+
 9.  LFP estimation & signal processing       (REVISED / COPIED)
+      _estimate_LFP  [COPIED]
+
 10. Save / load helpers                      (REVISED / COPIED)
+      reorder_spiking_neurons, create_dir, save_place_fields, save_vars,
+      save_PSD, save_TFR, save_LFP, save_step_sizes, save_gavg_step_sizes,
+      save_wmx, load_wmx, load_spikes, load_LFP
+
 11. Misc. utilities                          (REVISED / COPIED)
+      refractoriness  [COPIED],  _get_consecutive_sublists  [COPIED],
+      argmin_time_arrays, generate_cue_spikes, _avg_rate, slice_high_activity,
+      sigmoid  [NEW],  normalized_sigmoid  [NEW],  softplus  [NEW],
+      emperical_tuning_curve  [NEW],  behavior_markov  [NEW]
+
 12. Oscillation detection                    (REVISED / COPIED)
+      _calc_spectrum, analyse_rate, calc_TFR, ripple_AC, _fisher, ripple,
+      gamma, lowfreq, lowpass_filter, bandpass_filter, calc_phase,
+      analyse_estimated_LFP
+
 13. Bayesian replay decoding                 (REVISED)
+      extract_binspikecount, calc_posterior, _line, _evaluate_fit,
+      fit_trajectory, _shuffle_tuning_curves, _test_significance_subprocess,
+      test_significance
+
 14. Checkpointed multi-lap continuation      (NEW)
+      _task_imports, find_feature_step, run_lap_steps, run_lap_prefix,
+      run_lap_from_prefix
 """
 
 import os, pickle

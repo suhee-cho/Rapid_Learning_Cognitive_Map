@@ -11,8 +11,14 @@ Additional T-maze–specific functions not present in the other task modules:
   analyse_replay_type   — classifies detected SWR events by which canonical
                           trajectory (left arm, right arm, full loop) they match.
   plot_Tmaze_heat       — visualises a scalar per-state value on the T-maze grid.
-  compute_transition_matrix — [NEW] builds a softmax-weighted Markov transition
+  compute_transition_matrix — builds a softmax-weighted Markov transition
                           matrix from state values (used for behavioural analysis).
+  pred_norm             — column-wise min-max normalisation of a prediction array.
+  build_potentiated_weight_matrix — selectively scales the recurrent CA3–CA3
+                          synapses whose pre- and post-synaptic neurons both have
+                          place fields in a chosen set of states.
+  simulate_choices      — rolls out Markov-chain trajectories per trial and
+                          tallies which outcome state was reached.
 
 Attribution guide (same convention as linear_reward_functions.py):
   sample_spatial_points       — [NEW] generates a 2-D grid covering the T-maze shape.
@@ -29,9 +35,38 @@ Attribution guide (same convention as linear_reward_functions.py):
   analyse_replay              — [REVISED] supports ordered_neuron_idx remapping
                                  for sorting CA1 neurons by place field position.
   analyse_replay_type         — [NEW]
+  compute_transition_matrix   — [NEW]
+  pred_norm                   — [NEW]
+  plot_Tmaze_heat             — [NEW]
+  build_potentiated_weight_matrix — [NEW]
   load_PF_starts / load_tuning_curves — [REVISED]
-  get_tuning_curve / evaluate_lambda_t / inhom_poisson — [REVISED]
+  evaluate_theta_modulation / get_tuning_curve / evaluate_lambda_t / inhom_poisson
+                              — [REVISED]
   _avg_rate / load_spike_trains — [COPIED from Ecker et al.]
+
+Analysis helper sections (numbering continues from common_functions.py; all [NEW],
+moved here out of FigS6_Carey_replay.ipynb):
+  15. Per-region replay burst detection
+        state_color                — colour-codes a state by arm membership.
+        get_region_neuron_ids      — CA3 neuron IDs with place fields in given states.
+        region_population_rate     — binned population rate from a region's neurons only.
+        smooth_rate                — Gaussian smoothing of a rate trace.
+        detect_burst_intervals     — contiguous above-threshold burst intervals.
+        classify_arm_direction     — sequential-structure test (spike time vs. PF
+                                      position) marking a burst as a valid replay.
+        count_region_replay_events — per-region burst detection plus validity check.
+        count_replay_by_region     — runs the above for every region in region_defs.
+        merge_close_events         — merges intervals separated by < merge_gap_ms.
+        count_total_replay_events  — merges valid events across regions so a replay
+                                      sweeping several regions is counted once.
+  16. Cached network-file lookup
+        lap_file                   — path to a trial's online-learning lap_N.npz.
+        replay_activity_file       — path to a trial's offline replay activity file.
+        has_online_network         — True if every trial has its online lap file.
+        has_offline_network        — True if every trial has its offline replay file.
+  17. Behavioural choice simulation
+        simulate_choices           — Markov-chain rollouts per trial; returns the
+                                      outcome fractions and termination steps.
 
 Note: inhom_poisson in this file uses to_xp / to_cpu helpers for optional GPU
 acceleration (via CuPy), unlike the CPU-only version in linear_reward_functions.py.

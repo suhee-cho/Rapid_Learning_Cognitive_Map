@@ -6,6 +6,11 @@ online and offline simulation pipelines.  Every module imports this file with
 ``from global_variables import *``.
 
 All constants here are NEW (specific to this project) unless noted.
+
+The only function defined in this module is:
+  sigmoid — logistic transfer function 1 / (1 + exp(-b*(x-a))), used to derive
+            the firing-rate and plateau-probability constants below and re-exported
+            (with the same definition) from common_functions.py.
 """
 
 import numpy as np

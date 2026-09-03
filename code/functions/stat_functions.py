@@ -1,3 +1,23 @@
+"""
+stat_functions.py  [NEW]
+========================
+Effect-size and confidence-interval helpers used by the analysis notebooks to
+report the statistics quoted in the manuscript.
+
+Functions
+---------
+  cohens_d_paired — Cohen's d for paired samples (mean difference / SD of the
+                     differences).
+  cohens_d_ind    — Cohen's d for two independent samples (pooled SD).
+  cohens_d_1samp  — Cohen's d for one sample against a reference value mu0.
+  ci_paired       — two-sided (1 - alpha) t CI for the mean paired difference.
+  ci_ind          — two-sided (1 - alpha) t CI for the difference between two
+                     independent means.
+  ci_1samp        — two-sided (1 - alpha) t CI for a single-sample mean.
+
+All functions in this file are new (written for this project).
+"""
+
 import numpy as np
 from scipy import stats
 

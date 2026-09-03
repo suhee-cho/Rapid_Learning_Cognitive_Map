@@ -6,9 +6,10 @@ Task-specific functions for the Linear Reward environment.
 Attribution guide
 -----------------
 Functions below marked [NEW] were written for this project.
-Functions marked [REVISED] are adapted from Ecker et al. work
+Functions marked [REVISED] are adapted from Ecker et al. (2022), eLife 11:e71850
 (https://github.com/KaliLab/ca3net) with changes noted inline.
-Functions marked [COPIED] are taken from Ecker et al. work with only minor edits.
+Functions marked [COPIED] are taken from Ecker et al. (2022), eLife 11:e71850
+(https://github.com/KaliLab/ca3net) with only minor edits.
 
 Summary of attribution per function:
   sample_spatial_points       — [NEW]

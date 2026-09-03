@@ -4,6 +4,22 @@ plots.py  [NEW]
 Plotting utilities for visualising simulation results across all three task
 environments (linear reward, linear shock, T-maze).
 
+Functions
+---------
+  create_gradient          — list of RGB colours interpolating between two colours.
+  average_weight           — block-averages a weight matrix onto a coarse
+                              (y_dim, x_dim) grid for visualisation.
+  plot_heatmap             — pcolormesh wrapper adding a colourbar and title.
+  extract_aligned_activity — per-neuron activity windows centred on each
+                              neuron's peak position (tiles the map to avoid
+                              edge-slicing errors).
+  plot_shaded              — mean line with a shaded mean ± error band.
+  plot_box                 — side-by-side box plots of two groups, no fliers.
+  create_annot_nonzero     — string annotation array for a heatmap, blanking
+                              zero entries.
+  plot_spike               — raster plot of a neuron subset, with optional
+                              zoom window and highlighted cue cells.
+
 All functions in this file are new (written for this project).
 """
 
