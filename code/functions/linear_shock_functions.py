@@ -64,6 +64,25 @@ base_path = os.path.sep.join(os.path.abspath("__file__").split(os.path.sep)[:-2]
 data_path = os.path.join(base_path,"results/linear_shock")
 pklf_name = os.path.join(data_path, "PF_peak_data.pkl")
 
+def sample_spatial_points(unit_gran):
+    """
+    Generate a uniform grid of 2-D spatial sample points along the linear shock track.
+
+    Parameters
+    ----------
+    unit_gran : int
+        Number of sample points per maze unit.
+
+    Returns
+    -------
+    spatial_points : np.ndarray, shape (unit_gran * num_state_total, 2)
+        Array of (row=0, col) coordinates covering the entire track.
+    """
+    col = np.linspace(0,num_state_total-1.0/unit_gran,unit_gran*num_state_total).reshape(-1, 1)
+    row = np.zeros((len(col),1))
+    spatial_points = np.hstack([row, col])
+    return spatial_points
+
 def analyse_replay_type(spk_time, spk_neurons, rate, target_trajectory=[[3,4,5,6],[3,2,1,0]],
                         coverage_thr=0.75, save_path=False, verbose=True):
     """
@@ -278,25 +297,6 @@ def analyse_replay(spike_times, spiking_neurons, rate, len_sim=rest_time, spatia
         if verbose:
             print("No activity!")
         return [np.nan for _ in range(20)]
-
-def sample_spatial_points(unit_gran):
-    """
-    Generate a uniform grid of 2-D spatial sample points along the linear shock track.
-
-    Parameters
-    ----------
-    unit_gran : int
-        Number of sample points per maze unit.
-
-    Returns
-    -------
-    spatial_points : np.ndarray, shape (unit_gran * num_state_total, 2)
-        Array of (row=0, col) coordinates covering the entire track.
-    """
-    col = np.linspace(0,num_state_total-1.0/unit_gran,unit_gran*num_state_total).reshape(-1, 1)
-    row = np.zeros((len(col),1))
-    spatial_points = np.hstack([row, col])
-    return spatial_points
 
 # Adopted and revised from Ecker et al., 2022, ELife (https://github.com/KaliLab/ca3net).
 # Original: assigned 1-D place field centres on a linear track.

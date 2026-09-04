@@ -57,7 +57,7 @@ start = np.array([0, 0])
 feature_speed = np.concatenate((np.array([0.5,2.0]),np.ones((num_state_total))),axis=0) # [unit/ms]
 
 MI_vector = np.concatenate((np.array([0,10]),np.ones((num_state_total))),axis=0) # MI for the cues.
-value_vector = np.concatenate((np.array([1,-5]),np.zeros((num_state_total))),axis=0) # Valence for the cues: [neutral, positive, negative]
+value_vector = np.concatenate((np.array([1,-1]),np.zeros((num_state_total))),axis=0) # Valence for the cues: [neutral, positive, negative]
 num_features = len(MI_vector) # Number of cues
 
 # Offline learning variables
